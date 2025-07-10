@@ -9,7 +9,6 @@ library(ggplot2)
 library(dplyr)
 library(GWalkR)
 library(posterdown)
-library(posterdown)
 
 
 ########### load data#################
