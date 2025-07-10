@@ -1,0 +1,30 @@
+Subscription attrition data June 2025,,
+,,
+,,
+Field name:,Data type:,Description:
+age,numeric,The age of the customer at the end of the 90 day analysis period
+gender,char,The gender of the customer recorded when they first subscribed to their dog food plan
+support_ticket,char,categorises if the customer has raised a support ticket in the 6 months before the end of the 90 day anlysis period
+satisfaction_survey,char,categorises how the customer responded to their most recent satisfaction survey
+social_media_comments,int,number of social_media comments the customer has made within the 90 day analysis period
+social_media_posts,int,number of social_media posts the customer has created over the 9 day analysis period
+social_media_likes,int,number of social_media likes the customer has made within the 90 day analysis period
+social_media_shares,int,number of times the customer has shared a post within the  90 day analysis period
+last_login_device,char,the type of device the customer used for their most recent login
+last_browser,char,the type of browser that the customer used for their most recent login
+location,char,the region the customer is currently signed up to receive their subscription in
+subscription,char,categorises the menu type of subscription the customer is receiving as of the final day of the 90 day analysis period
+subscription_meals_per_week,numeric,categorises the number of meals per week that the customer is receiving as of the final day of the 90 day analysis period
+subscription_people,numeric,categorises the number of servings per meal that the customer is receiving as of the final day of the 90 day analysis period
+payment_type,char,Categorises the customers current payment method for their subscription as of the final day of the 90 day analysis period
+app_visits,numeric,number off app logins the customer made over the 90 day analysis period
+website_visits,numeric,number of website logins the customer made over the 90 day analysis period
+opened_last_email,logical bool,Binary field for if the customer has opened the most recent email we have sent them 0 = False
+discounted_rate_last_purchase,logical bool,Binary field for if the customer is received a discount on the last order as of the last day of the 90 day analysis period 0 = False
+subscription_payment_problem_last4Weeks,logical bool,Categorises if a customer has had any arreas or processing errors when paying for their subscription in the 4 week period to the final day of the 90 day analysis period
+weeks_since_signup,numeric,number of weeks since the customer signed up 
+num_purchases,numeric,"total number of purchases the customer has made throughout the 90 day analysis period, usually max 1 per week"
+weeks_since_last_purchase,numeric,the number of weeks before the final day of the analysis period that the customer made their most recent purchase. Value  is 0 if purchase was made in the 7 days prior to the final day of the analysis period. Value defaults to 12 if no purchase was made throught the analysis period
+avg_AddOnpurchase_value,char,the average value of add-on purchases made throughout the 90 day analysis period
+user_ID,int,unique customer ID for payment processing and web system
+retained_binary,Factor,binary field for if the customer kept their subscription throughout the entire 90 day analysis period
