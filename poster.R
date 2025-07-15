@@ -1,16 +1,8 @@
 ##### libraries##########
-if (!require("ggplot2")) install.packages("ggplot2")
-if (!require("dplyr")) install.packages("dplyr")
+if (!require("tidyverse")) install.packages("tidyverse")
 if (!require("GWalkR")) install.packages("GWalkR")
-if (!require("remotes")) install.packages("remotes")
-if (!require("rmarkdown")) install.packages("rmarkdown")
-remotes::install_github("brentthorne/posterdown")
-library(ggplot2)
-library(dplyr)
+library(tidyverse)
 library(GWalkR)
-library(posterdown)
-library(posterdown)
-
 
 ########### load data#################
 customerMetaData <- read.csv("customers_metadata.csv")
