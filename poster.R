@@ -15,4 +15,4 @@ View(customerData)
 # gwalkr(customerData)
 
 #xxxxxxx
-#xxxxxxx
+library(ggplot2)mmmm
