@@ -13,3 +13,6 @@ View(customerData)
 # Use GWalkR to interactively explore the midwest dataset
 # gwalkr(customerMetaData)
 # gwalkr(customerData)
+
+#xxxxxxx
+library(ggplot2)mmmm
