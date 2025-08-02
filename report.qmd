@@ -1,0 +1,66 @@
+---
+format:
+  pdf:
+    geometry:
+      - top=10mm
+      - left=15mm
+      - right=15mm
+      - bottom=20mm
+      - heightrounded
+editor: visual
+---
+
+--Cover Page
+
+\begin{titlepage}
+\vspace*{5cm}
+\begin{center}
+  {\LARGE\bfseries Understanding and Reducing Customer Churn at PlatefulNZ \par}
+  \vspace{0.5em}
+  {\large\itshape Data-Driven Insights for Improving Customer Retention in a Subscription-Based Meal Kit Service \par}
+  \vspace{2em}
+  {\large BUSINFO704 – Business Analytics \par}
+  {\large Due: 19 August 2025 \par}
+  \vspace{12em}
+  {\large \textbf{Group Members:} \par}
+  \vspace{0.5em}
+  {\large Yicong Li – 691671170 \par}
+  {\large Alice Wang – 123456789 \par}
+  {\large John Zhang – 987654321 \par}
+  {\large Emma Chen – 112233445 \par}
+\end{center}
+\end{titlepage}
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+if (!require("tidyverse")) install.packages("tidyverse")
+if (!require("knitr")) install.packages("knitr")
+if (!require("tinytex")) install.packages("tinytex")
+if (!require("tidymodels")) install.packages("tidymodels")
+library(tidymodels)
+library(tidyverse)
+library(knitr)
+library(tinytex)
+```
+
+-- Introduction
+
+-- Data Exploration & Methodology
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+customerMetaData <- read.csv("customers_metadata.csv")
+customerData <- read.csv("customers.csv")
+View(customerMetaData)
+View(customerData)
+```
+
+
+
+-- Findings & Result Analysis
+
+-- Recommendations & Strategy
+
+-- Conclusion
+
+-- References
+
+-- Appendices
