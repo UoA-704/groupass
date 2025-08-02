@@ -28,3 +28,5 @@ weeks_since_last_purchase,numeric,the number of weeks before the final day of th
 avg_AddOnpurchase_value,char,the average value of add-on purchases made throughout the 90 day analysis period
 user_ID,int,unique customer ID for payment processing and web system
 retained_binary,Factor,binary field for if the customer kept their subscription throughout the entire 90 day analysis period
+
+

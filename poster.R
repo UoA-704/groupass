@@ -11,10 +11,17 @@ library(tinytex)
 library(GWalkR)
 
 ########### load data#################
-customerMetaData <- read.csv("customers_metadata.csv")
 customerData <- read.csv("customers.csv")
-View(customerMetaData)
 View(customerData)
+
+# remove string 'weeks'
+data$weeks_since_signup <- as.numeric(gsub(" weeks", "", data$weeks_since_signup))
+data$weeks_since_last_purchase <- as.numeric(gsub(" weeks", "", data$weeks_since_last_purchase))
+
+
+# remove string 'currency tag'
+data$avg_AddOnpurchase_value <- as.numeric(gsub("[$]", "", data$avg_AddOnpurchase_value))
+
 
 # Use GWalkR to interactively explore the midwest dataset
 # gwalkr(customerMetaData)

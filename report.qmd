@@ -10,8 +10,6 @@ format:
 editor: visual
 ---
 
---Cover Page
-
 \begin{titlepage}
 \vspace*{5cm}
 \begin{center}
@@ -36,10 +34,12 @@ if (!require("tidyverse")) install.packages("tidyverse")
 if (!require("knitr")) install.packages("knitr")
 if (!require("tinytex")) install.packages("tinytex")
 if (!require("tidymodels")) install.packages("tidymodels")
+if (!require("skimr")) install.packages("skimr")
 library(tidymodels)
 library(tidyverse)
 library(knitr)
 library(tinytex)
+library(skimr)
 ```
 
 -- Introduction
@@ -47,13 +47,50 @@ library(tinytex)
 -- Data Exploration & Methodology
 
 ```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
-customerMetaData <- read.csv("customers_metadata.csv")
-customerData <- read.csv("customers.csv")
-View(customerMetaData)
-View(customerData)
+############ loading data & data processing ############
+data <- read.csv("customers.csv")
+# View(data)
+# skim(customerData)
+
+
+# remove string 'week'
+data$weeks_since_signup <- as.numeric(gsub(" weeks", "", data$weeks_since_signup))
+data$weeks_since_last_purchase <- as.numeric(gsub(" weeks", "", data$weeks_since_last_purchase))
+
+
+# remove string 'currency tag'
+data$avg_AddOnpurchase_value <- as.numeric(gsub("[$]", "", data$avg_AddOnpurchase_value))
+
+
+# gender type (3 types)
+n_distinct(data$gender)
+unique(data$gender) 
+# "Female"   ///    "Prefer Not to Answer / Other / Unknown"    ///   "Male" 
+
+
+# support ticket type (3 types)
+n_distinct(data$support_ticket)
+unique(data$support_ticket) 
+# "NotLast3Months"  ////   "Last3Months"  ////    "YesThisMonth"
+
+
+# sati survey type (6 types)
+n_distinct(data$satisfaction_survey)
+unique(data$satisfaction_survey) 
+# 1 / 2 / 3 / 4 / 5 / NoResponse
+
+
+# subscription type (5 types)
+n_distinct(data$subscription)
+unique(data$subscription) 
+# "PlantBased" /// "Family"  //  "Everyday" ////  "Gourmet"  ////  "Low-carb"
+
+
+# payment type (3 types)
+n_distinct(data$payment)
+unique(data$payment) 
+# "DebitCard"  "CreditCard" "AppPay"  
 ```
-
-
 
 -- Findings & Result Analysis
 
