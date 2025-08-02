@@ -1,0 +1,56 @@
+#################################
+数值型（Numeric）
+age                          (under 18 / 18 - 30 / 30 - 40 / >40) 分段考虑
+
+social_media_comments 
+
+social_media_posts
+
+social_media_likes
+
+social_media_shares
+
+subscription_meals_per_week
+
+subscription_people           订阅人数 
+
+app_visits                    访问频率
+
+website_visits                访问频率
+
+weeks_since_signup            注册时间 (remove suffix ‘weeks’) as int
+
+num_purchases                 购买次数
+
+weeks_since_last_purchase     上次购买时间 (remove suffix ‘weeks’) as int
+#################################
+
+#################################
+📌 字符型（Categorical - Char）
+gender                        "Female"   ///    "Prefer Not to Answer / Other / Unknown"    ///   "Male" 
+
+support_ticket                咨询（6个月）       # "NotLast3Months"  ////   "Last3Months"  ////    "YesThisMonth"
+
+satisfaction_survey           客户满意度评价       # 1 / 2 / 3 / 4 / 5 / NoResponse
+
+last_login_device
+
+last_browser
+
+location                       地点 
+
+subscription                   订阅               # "PlantBased" /// "Family"  //  "Everyday" ////  "Gourmet"  ////  "Low-carb"
+
+payment_type                   # "DebitCard"  "CreditCard" "AppPay"  
+
+avg_AddOnpurchase_value (注意：原数据为 char，但如果它实际是金额或数值，建议处理成 numeric)
+#################################
+
+#################################
+布尔型（二元逻辑型 Logical/Binary）
+opened_last_email (0=False, 1=True)
+
+discounted_rate_last_purchase (0=False, 1=True)
+
+subscription_payment_problem_last4Weeks (0=False, 1=True)
+#################################
