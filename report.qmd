@@ -92,9 +92,12 @@ unique(data$payment)
 
 ```{R}
 # View(data)
-# skim(data)
+skim(data)
 
-data %>% filter(weeks_since_last_purchase < 0) %>% nrow() // 4870
+data %>% filter(weeks_since_last_purchase < 0) %>% nrow() 
+
+
+
 ```
 
 
