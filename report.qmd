@@ -41,6 +41,7 @@ if (!require("vip")) install.packages("vip")
 if (!require("bonsai")) install.packages("bonsai")     # lightgbm 的 parsnip 引擎来自 bonsai
 if (!require("lightgbm")) install.packages("lightgbm") # 有些环境需另外装系统依赖
 if (!require("xgboost"))  install.packages("xgboost")
+if (!require("broom"))  install.packages("broom")
 library(tidymodels)
 library(tidyverse)
 library(knitr)
@@ -50,6 +51,7 @@ library(psych)
 library(vip)
 library(bonsai)
 library(ranger)
+library(broom)
 ```
 
 -- Introduction
@@ -160,6 +162,7 @@ categorical_vars <- c(
   "last_browser",
   "location",
   "subscription",
+  "discounted_rate_last_purchase",
   "payment_type"
 )
 
@@ -175,7 +178,6 @@ numeric_vars <- c(
   "weeks_since_signup",
   "weeks_since_last_purchase",
   "num_purchases",
-  "discounted_rate_last_purchase",
   "avg_AddOnpurchase_value"
 )
 
@@ -190,33 +192,7 @@ num_summary <- psych::describe(filter_data %>% select(any_of(numeric_vars)))
 kable(num_summary, caption = "数值变量描述统计")
 
 ```
-
-```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
-
-# 批量 Mann–Whitney 检验
-num_test_results <- map_dfr(numeric_vars, function(v) {
-  ok <- complete.cases(filter_data[[v]], filter_data$retained_binary)
-  group1 <- filter_data[[v]][ok & filter_data$retained_binary == 1]
-  group0 <- filter_data[[v]][ok & filter_data$retained_binary == 0]
-  
-  test <- wilcox.test(group1, group0)
-  
-  tibble(
-    variable = v,
-    p_value = test$p.value,
-    median_retained = median(group1, na.rm = TRUE),
-    median_churned = median(group0, na.rm = TRUE)
-  )
-}) %>%
-  arrange(p_value) %>%
-  mutate(significant = ifelse(p_value < 0.05, "Yes", "No"))
-
-# 看前 5 个最显著的数值变量
-head(num_test_results, 10)
-```
-
 ```{r}
-
 # 正态变量 
 nonSkewnessVariable <- c(
   "website_visits",
@@ -235,10 +211,37 @@ SkewnessVariables <- c(
   "social_media_posts",
   "social_media_likes",
   "social_media_shares",
-  "weeks_since_last_purchase",
-  "discounted_rate_last_purchase"
+  "weeks_since_last_purchase"
 )
+```
 
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+
+# 批量 Mann–Whitney 检验
+num_test_results <- map_dfr(SkewnessVariables, function(v) {
+  ok <- complete.cases(filter_data[[v]], filter_data$retained_binary)
+  group1 <- filter_data[[v]][ok & filter_data$retained_binary == 1]
+  group0 <- filter_data[[v]][ok & filter_data$retained_binary == 0]
+  
+  test <- wilcox.test(group1, group0)
+  
+  tibble(
+    variable = v,
+    p_value = test$p.value,
+    median_retained = median(group1, na.rm = TRUE),
+    median_churned = median(group0, na.rm = TRUE)
+  )
+}) %>%
+  arrange(p_value) %>%
+  mutate(significant = ifelse(p_value < 0.05, "Yes", "No"))
+
+# 看前 5 个最显著的数值变量
+head(num_test_results, 6)
+```
+
+```{r}
+
+# 同方差检验
 levene_results <- lapply(nonSkewnessVariable, function(v) {
   formula <- as.formula(paste(v, "~ factor(retained_binary)"))
   test <- leveneTest(formula, data = filter_data)
@@ -353,6 +356,10 @@ chisq.test(tbl8)
 tbl9 <- table(filter_data$payment_type, filter_data$retained_binary)
 chisq.test(tbl9)
 
+# 以 discount_rate_last_purchase 为例
+tbl10 <- table(filter_data$discounted_rate_last_purchase, filter_data$retained_binary)
+chisq.test(tbl10)
+
 ```
 
 ```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
@@ -412,6 +419,12 @@ ggplot(filter_data, aes(x = subscription, fill = factor(retained_binary))) +
 
 #
 ggplot(filter_data, aes(x = payment_type, fill = factor(retained_binary))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
+
+#
+ggplot(filter_data, aes(x = discounted_rate_last_purchase, fill = factor(retained_binary))) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
   labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
@@ -776,13 +789,40 @@ wf <- workflow() |> add_recipe(rec) |> add_model(logit_mod)
 # ---------- 4) 训练 + 测试集评估 ----------
 fit <- fit(wf, data = train_data)
 
+
+# 3) 取出底层 glm 对象，查看 summary（含系数、SE、z、Pr(>|z|)）
+glm_fit <- workflows::extract_fit_engine(fit)   # == 一个 glm 对象
+summary(glm_fit)                                # 控制台里就能看到 p-value、(Intercept) 等
+
+# 4) 用 broom 整理成整洁表（带 p 值）
+coef_table <- tidy(glm_fit)                     # estimate, std.error, statistic, p.value
+coef_table
+
 preds <- augment(fit, new_data = test_data)  # 包含 .pred_0 / .pred_1 / .pred_class
 
 # 混淆矩阵
 conf_mat(preds, truth = retained_binary, estimate = .pred_class)
-
+logit_mod
 ```
-
+| Variable | Estimate | Std. Error | p-value | OR | CI Lower | CI Upper | Significant (p<0.05) | Interpretation |
+|----------|----------|------------|---------|----|----------|----------|----------------------|----------------|
+| (Intercept) | -0.0456 | 0.0382 | 0.233 | 0.9554 | 0.8847 | 1.0323 | FALSE | 基准情景的对数赔率/概率起点） |
+| weeks_since_last_purchase | -0.4694 | 0.0043 | 2e-16 | 0.6255 | 0.6166 | 0.6346 | TRUE | 该变量增加1单位，留存赔率↓约37.5% |
+| discounted_rate_last_purchase | -3.8825 | 0.0383 | 2e-16 | 0.0206 | 0.0191 | 0.0222 | TRUE | 该变量增加1单位，留存赔率↓约97.9% |
+| avg_AddOnpurchase_value | 0.0322 | 0.0006 | 2e-16 | 1.0327 | 1.0311 | 1.0343 | TRUE | 该变量增加1单位，留存赔率↑约3.3% |
+| num_purchases | 0.5537 | 0.0060 | 2e-16 | 1.7398 | 1.7113 | 1.7689 | TRUE | 该变量增加1单位，留存赔率↑约73.9% |
+| location_BayOfPlenty | 0.0534 | 0.0384 | 0.165 | 1.0548 | 0.9784 | 1.1367 | FALSE | 该变量增加1单位，留存赔率↑约5.5% |
+| location_Canterbury | -1.1345 | 0.0269 | 2e-16 | 0.3215 | 0.3047 | 0.3393 | TRUE | 该变量增加1单位，留存赔率↓约67.8% |
+| location_Gisborne | 0.0959 | 0.0934 | 0.309 | 1.1007 | 0.9166 | 1.3211 | FALSE | 该变量增加1单位，留存赔率↑约10.1% |
+| location_HawkesBay | 0.0279 | 0.0554 | 0.614 | 1.0283 | 0.9214 | 1.1478 | FALSE | 该变量增加1单位，留存赔率↑约2.8% |
+| location_ManawhatuWhanganui | -0.0339 | 0.0440 | 0.441 | 0.9666 | 0.8893 | 1.0506 | FALSE | 该变量增加1单位，留存赔率↓约3.3% |
+| location_Northland | -0.0285 | 0.0480 | 0.553 | 0.9720 | 0.8826 | 1.0696 | FALSE | 该变量增加1单位，留存赔率↓约2.8% |
+| location_Otago | -1.1905 | 0.0375 | 2e-16 | 0.3040 | 0.2823 | 0.3274 | TRUE | 该变量增加1单位，留存赔率↓约69.6% |
+| location_Southland | -1.1027 | 0.0565 | 2e-16 | 0.3317 | 0.2963 | 0.3714 | TRUE | 该变量增加1单位，留存赔率↓约66.8% |
+| location_Taranaki | -0.0627 | 0.0670 | 0.349 | 0.9393 | 0.8236 | 1.0715 | FALSE | 该变量增加1单位，留存赔率↓约6.1% |
+| location_Tasman | -1.0718 | 0.0772 | 2e-16 | 0.3423 | 0.2940 | 0.3986 | TRUE | 该变量增加1单位，留存赔率↓约65.8% |
+| location_Waikato | -0.0096 | 0.0332 | 0.773 | 0.9905 | 0.9265 | 1.0591 | FALSE | 该变量增加1单位，留存赔率↓约0.9% |
+| location_Wellington | -0.0359 | 0.0331 | 0.279 | 0.9647 | 0.9028 | 1.0302
 
 ```{r}
 folds <- vfold_cv(train_data, v = 5, strata = retained_binary)
