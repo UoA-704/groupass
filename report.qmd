@@ -451,14 +451,323 @@ split <- initial_split(filter_data, prop = 0.8, strata = retained_binary)
 train_data <- training(split)
 test_data  <- testing(split)
 
+# #############################################
+
+# 计算目标数量
+n_total <- 10000
+n1 <- round(n_total * 0.8)  # retained_binary == 1
+n0 <- n_total - n1          # retained_binary == 0
+
+# 分别抽样
+sample_1 <- train_data %>%
+  filter(retained_binary == 1) %>%
+  slice_sample(n = n1)
+
+sample_0 <- train_data %>%
+  filter(retained_binary == 0) %>%
+  slice_sample(n = n0)
+
+
+# 合并
+train_sample <- bind_rows(sample_1, sample_0)
+
+# 检查结果
+table(train_sample$retained_binary)
+prop.table(table(train_sample$retained_binary))
+nrow(train_sample)
+
+# ########################################
+
 # ---------- 3) recipe + 模型 ----------
-rec <- recipe(retained_binary ~ ., data = train_data) |>
-  step_string2factor(all_nominal_predictors()) |>
-  step_unknown(all_nominal_predictors()) |>
-  step_novel(all_nominal_predictors()) |>
-  step_other(all_nominal_predictors(), threshold = 0.01) |>
-  step_dummy(all_nominal_predictors()) |>
-  step_impute_median(all_numeric_predictors()) |>
+rec_tune <- recipe(
+    retained_binary ~ ., 
+    data = train_sample %>% select(retained_binary, all_of(finalVariables))
+  ) %>%
+  step_string2factor(all_nominal_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_zv(all_predictors())
+
+logit_mod <- logistic_reg(mode = "classification") |> set_engine("glm")
+wf <- workflow() |> add_recipe(rec) |> add_model(logit_mod)
+
+# ---------- 4) 训练 + 测试集评估 ----------
+fit <- fit(wf, data = train_sample)
+
+preds <- augment(fit, new_data = test_data)  # 包含 .pred_0 / .pred_1 / .pred_class
+
+# 混淆矩阵
+conf_mat(preds, truth = retained_binary, estimate = .pred_class)
+
+```
+
+```{r}
+folds <- vfold_cv(train_sample, v = 5, strata = retained_binary)
+
+ctrl <- control_resamples(save_pred = TRUE)
+cv_res <- fit_resamples(
+  wf,
+  resamples = folds,
+  control   = ctrl,
+  metrics   = metric_set(accuracy, sens, spec, precision, f_meas, roc_auc)
+)
+
+collect_metrics(cv_res)         # 5 折的均值和标准误
+```
+
+
+
+
+```{r}
+# lightGBM
+
+# ---- LightGBM (bonsai/lightgbm) ----
+
+# 用 train_sample 做交叉验证
+folds_tune <- vfold_cv(train_sample, v = 5, strata = retained_binary)
+
+lgbm_spec <- boost_tree(
+  learn_rate     = tune(),
+  trees          = tune(),
+  tree_depth     = tune(),
+  min_n          = tune(),
+  loss_reduction = tune()
+) %>% 
+  set_engine("lightgbm") %>% 
+  set_mode("classification")
+
+# ⚠ 用 train_sample 创建 recipe
+rec_tune <- recipe(
+    retained_binary ~ ., 
+    data = train_sample %>% select(retained_binary, all_of(finalVariables))
+  ) %>%
+  step_string2factor(all_nominal_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_zv(all_predictors())
+
+lgbm_wf <- workflow() %>% add_recipe(rec_tune) %>% add_model(lgbm_spec)
+
+# ⚠ finalize 也用 train_sample
+lgbm_param <- parameters(lgbm_spec) |> finalize(train_sample)
+
+set.seed(704)
+lgbm_grid <- grid_random(
+  learn_rate(range = c(-3, -0.5)),
+  trees(range = c(400L, 800L)),  # 控制树数
+  tree_depth(range = c(3L, 5L)),
+  min_n(range = c(2L, 20L)),
+  loss_reduction(range = c(-4, 1)),
+  size = 5
+)
+
+# 调参用 train_sample 的 folds
+lgbm_res <- tune_grid(
+  lgbm_wf, resamples = folds_tune, grid = lgbm_grid,
+  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas),
+  control = control_grid(save_pred = TRUE)
+)
+
+# 选最优参数
+lgbm_best      <- select_best(lgbm_res, metric = "roc_auc")
+lgbm_final_wf  <- finalize_workflow(lgbm_wf, lgbm_best)
+
+# ⚠ 最终模型用全量 train/test split
+lgbm_final_fit <- last_fit(
+  lgbm_final_wf, split,
+  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas)
+)
+
+lgbm_metrics <- collect_metrics(lgbm_final_fit) %>% dplyr::mutate(model = "LightGBM")
+lgbm_pred    <- collect_predictions(lgbm_final_fit) %>% dplyr::mutate(model = "LightGBM")
+
+# 从调参阶段拿到每一折的 AUC
+cv_auc <- collect_predictions(lgbm_res, summarize = FALSE) %>%
+  group_by(id) %>%
+  yardstick::roc_auc(truth = retained_binary, .pred_1, event_level = "second")
+
+# 计算平均值 ± 标准差
+cv_auc %>%
+  summarise(
+    mean_auc = mean(.estimate),
+    sd_auc   = sd(.estimate)
+  )
+
+
+print(lgbm_metrics)
+print(lgbm_pred)
+collect_metrics(lgbm_res)
+
+```
+
+
+
+```{r}
+
+
+# ---- XGBoost ----
+
+# 用 train_sample 生成交叉验证 folds
+folds_tune <- vfold_cv(train_sample, v = 5, strata = retained_binary)
+
+xgb_spec <- boost_tree(
+  trees          = tune(),
+  tree_depth     = tune(),
+  learn_rate     = tune(),
+  mtry           = tune(),   # 列采样
+  min_n          = tune(),
+  loss_reduction = tune(),   # gamma
+  sample_size    = tune()    # 行采样
+) %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+
+# 用 train_sample 创建 recipe
+rec_tune <- recipe(retained_binary ~ ., data = train_sample) %>%
+  step_string2factor(all_nominal_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_zv(all_predictors())
+
+xgb_wf <- workflow() %>% add_recipe(rec_tune) %>% add_model(xgb_spec)
+
+# finalize 用 train_sample
+xgb_param <- parameters(xgb_spec) |> finalize(train_sample)
+
+# 随机搜索，5 个组合
+set.seed(704)
+xgb_grid <- grid_random(
+  trees(range = c(400L, 800L)),
+  tree_depth(range = c(3L, 5L)),
+  learn_rate(range = c(-3, -0.5)),
+  finalize(mtry(), train_sample),
+  min_n(range = c(2L, 20L)),
+  loss_reduction(range = c(-4, 1)),
+  sample_prop(range = c(0.6, 1.0)),  # ✅ 用比例参数
+  size = 5
+)
+
+
+# 调参用 folds_tune
+xgb_res <- tune_grid(
+  xgb_wf, resamples = folds_tune, grid = xgb_grid,
+  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas),
+  control = control_grid(save_pred = TRUE)
+)
+
+# 选最佳参数
+xgb_best      <- select_best(xgb_res, metric = "roc_auc")
+xgb_final_wf  <- finalize_workflow(xgb_wf, xgb_best)
+
+# 最终模型用全量 split
+xgb_final_fit <- last_fit(
+  xgb_final_wf, split,
+  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas)
+)
+
+xgb_metrics <- collect_metrics(xgb_final_fit) %>% dplyr::mutate(model = "XGBoost")
+xgb_pred    <- collect_predictions(xgb_final_fit) %>% dplyr::mutate(model = "XGBoost")
+
+# 从调参阶段拿到每一折的 AUC
+cv_auc <- collect_predictions(xgb_res, summarize = FALSE) %>%
+  group_by(id) %>%
+  yardstick::roc_auc(truth = retained_binary, .pred_1, event_level = "second")
+
+# 计算平均值 ± 标准差
+cv_auc %>%
+  summarise(
+    mean_auc = mean(.estimate),
+    sd_auc   = sd(.estimate)
+  )
+
+
+xgb_metrics
+xgb_pred
+
+```
+
+```{r}
+# 汇总对比块（生成表+ROC）
+# 指标表（四模型）
+all_metrics <- dplyr::bind_rows(
+  lgbm_metrics, xgb_metrics
+) %>%
+  dplyr::filter(.metric %in% c("roc_auc","accuracy","sens","spec","precision","f_meas")) %>%
+  dplyr::arrange(model, .metric)
+all_metrics
+
+# ROC（测试集）
+all_preds <- dplyr::bind_rows(
+  lgbm_pred, xgb_pred
+)
+
+all_preds %>%
+  dplyr::group_by(model) %>%
+  roc_curve(truth = retained_binary, .pred_1, event_level = "second") %>%
+  autoplot() +
+  labs(title = "ROC (Test) — Logistic vs RF vs LightGBM vs XGBoost",
+       x = "1 - Specificity", y = "Sensitivity") +
+  theme_minimal()
+
+# （可选）三模型混淆矩阵，Logistic 你也可以用同一方式取出
+# rf_cm   <- rf_final_fit$.predictions[[1]]   %>% conf_mat(truth = retained_binary, estimate = .pred_class)
+lgbm_cm <- lgbm_final_fit$.predictions[[1]] %>% conf_mat(truth = retained_binary, estimate = .pred_class)
+xgb_cm  <- xgb_final_fit$.predictions[[1]]  %>% conf_mat(truth = retained_binary, estimate = .pred_class)
+ lgbm_cm; xgb_cm
+
+```
+```{r}
+# —— 从调参对象里取“每折”的预测，然后算每折 ROC —— 
+lgbm_cv_roc <- collect_predictions(lgbm_res, summarize = FALSE) %>%
+  dplyr::group_by(id) %>%
+  yardstick::roc_curve(truth = retained_binary, .pred_1, event_level = "second") %>%
+  dplyr::mutate(model = "LightGBM")
+
+xgb_cv_roc <- collect_predictions(xgb_res, summarize = FALSE) %>%
+  dplyr::group_by(id) %>%
+  yardstick::roc_curve(truth = retained_binary, .pred_1, event_level = "second") %>%
+  dplyr::mutate(model = "XGBoost")
+
+# ── ① 先把 Logistic 的每折 ROC 取出来
+logit_cv_roc <- collect_predictions(cv_res, summarize = FALSE) %>%
+  dplyr::group_by(id) %>%
+  yardstick::roc_curve(truth = retained_binary, .pred_1, event_level = "second") %>%
+  dplyr::mutate(model = "Logistic")
+
+cv_roc <- dplyr::bind_rows(lgbm_cv_roc, xgb_cv_roc, logit_cv_roc)
+
+```
+
+```{r}
+
+ggplot(cv_roc, aes(x = 1 - specificity, y = sensitivity,
+                   group = interaction(model, id), color = model)) +
+  geom_path(alpha = 0.6) +
+  geom_abline(linetype = 3) +
+  labs(title = "ROC by Fold (5-fold CV)", x = "1 - Specificity", y = "Sensitivity") +
+  theme_minimal()
+```
+```{r}
+# ---------- 3) recipe + 模型 ----------
+rec_tune <- recipe(
+    retained_binary ~ ., 
+    data = train_data %>% select(retained_binary, all_of(finalVariables))
+  ) %>%
+  step_string2factor(all_nominal_predictors()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_impute_median(all_numeric_predictors()) %>%
   step_zv(all_predictors())
 
 logit_mod <- logistic_reg(mode = "classification") |> set_engine("glm")
@@ -473,6 +782,7 @@ preds <- augment(fit, new_data = test_data)  # 包含 .pred_0 / .pred_1 / .pred_
 conf_mat(preds, truth = retained_binary, estimate = .pred_class)
 
 ```
+
 
 ```{r}
 folds <- vfold_cv(train_data, v = 5, strata = retained_binary)
@@ -489,10 +799,8 @@ collect_metrics(cv_res)         # 5 折的均值和标准误
 ```
 
 
-
-
-
 ```{r}
+
 # 1) 收集每个样本的预测
 cv_pred <- collect_predictions(cv_res, summarize = FALSE)
 
@@ -523,176 +831,9 @@ p_fold <- autoplot(roc_cv) +
 
 print(p_fold)
 ```
-```{r}
-# random forest 
-
-# ---- Random Forest (ranger) ----
-rf_spec <- rand_forest(
-  mtry  = tune(),
-  trees = tune(),
-  min_n = tune()
-) %>%
-  set_engine("ranger", importance = "impurity", probability = TRUE) %>%
-  set_mode("classification")
-
-rf_wf <- workflow() %>% add_recipe(rec) %>% add_model(rf_spec)
-
-# 参数网格
-rf_param <- parameters(rf_spec) |> finalize(train_data)
-set.seed(704)
-rf_grid <- grid_regular(
-  finalize(mtry(), train_data),
-  trees(range = c(500L, 1500L)),
-  min_n(range = c(2L, 10L)),
-  levels = c(3, 3, 3)
-)
-
-ctrl <- control_grid(save_pred = TRUE)
-rf_res <- tune_grid(
-  rf_wf, resamples = folds, grid = rf_grid,
-  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas),
-  control = ctrl
-)
-
-rf_best      <- select_best(rf_res, metric = "roc_auc")
-rf_final_wf  <- finalize_workflow(rf_wf, rf_best)
-rf_final_fit <- last_fit(
-  rf_final_wf, split,
-  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas)
-)
-
-rf_metrics <- collect_metrics(rf_final_fit) %>% dplyr::mutate(model = "RandomForest")
-rf_pred    <- collect_predictions(rf_final_fit) %>% dplyr::mutate(model = "RandomForest")
-
 
 ```
 
-
-```{r}
-# lightGM
-
-# ---- LightGBM (bonsai/lightgbm) ----
-lgbm_spec <- boost_tree(
-  learn_rate     = tune(),
-  trees          = tune(),
-  tree_depth     = tune(),
-  min_n          = tune(),
-  loss_reduction = tune()
-) %>% set_engine("lightgbm") %>% set_mode("classification")
-
-lgbm_wf <- workflow() %>% add_recipe(rec) %>% add_model(lgbm_spec)
-
-lgbm_param <- parameters(lgbm_spec) |> finalize(train_data)
-set.seed(704)
-lgbm_grid <- grid_regular(
-  learn_rate(range = c(-3, -0.5)),    # 10^-3 ~ 10^-0.5
-  trees(range = c(300L, 2000L)),
-  tree_depth(range = c(3L, 8L)),
-  min_n(range = c(2L, 20L)),
-  loss_reduction(range = c(-4, 1)),   # 10^-4 ~ 10^1
-  levels = c(4, 4, 3, 3, 3)
-)
-
-lgbm_res <- tune_grid(
-  lgbm_wf, resamples = folds, grid = lgbm_grid,
-  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas),
-  control = control_grid(save_pred = TRUE)
-)
-
-lgbm_best      <- select_best(lgbm_res, metric = "roc_auc")
-lgbm_final_wf  <- finalize_workflow(lgbm_wf, lgbm_best)
-lgbm_final_fit <- last_fit(
-  lgbm_final_wf, split,
-  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas)
-)
-
-lgbm_metrics <- collect_metrics(lgbm_final_fit) %>% dplyr::mutate(model = "LightGBM")
-lgbm_pred    <- collect_predictions(lgbm_final_fit) %>% dplyr::mutate(model = "LightGBM")
-
-
-```
-
-
-```{r}
-
-# ---- XGBoost ----
-xgb_spec <- boost_tree(
-  trees          = tune(),
-  tree_depth     = tune(),
-  learn_rate     = tune(),
-  mtry           = tune(),   # 列采样
-  min_n          = tune(),
-  loss_reduction = tune(),   # gamma
-  sample_size    = tune()    # 行采样
-) %>% set_engine("xgboost") %>% set_mode("classification")
-
-xgb_wf <- workflow() %>% add_recipe(rec) %>% add_model(xgb_spec)
-
-xgb_param <- parameters(xgb_spec) |> finalize(train_data)
-set.seed(704)
-xgb_grid <- grid_regular(
-  trees(range = c(300L, 1500L)),
-  tree_depth(range = c(3L, 8L)),
-  learn_rate(range = c(-3, -0.5)),
-  finalize(mtry(), train_data),
-  min_n(range = c(2L, 20L)),
-  loss_reduction(range = c(-4, 1)),
-  sample_size(range = c(0.5, 1.0)),
-  levels = c(3, 3, 3, 3, 3, 3, 3)
-)
-
-xgb_res <- tune_grid(
-  xgb_wf, resamples = folds, grid = xgb_grid,
-  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas),
-  control = control_grid(save_pred = TRUE)
-)
-
-xgb_best      <- select_best(xgb_res, metric = "roc_auc")
-xgb_final_wf  <- finalize_workflow(xgb_wf, xgb_best)
-xgb_final_fit <- last_fit(
-  xgb_final_wf, split,
-  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas)
-)
-
-xgb_metrics <- collect_metrics(xgb_final_fit) %>% dplyr::mutate(model = "XGBoost")
-xgb_pred    <- collect_predictions(xgb_final_fit) %>% dplyr::mutate(model = "XGBoost")
-
-
-```
-
-
-```{r}
-# 汇总对比块（生成表+ROC）
-# 指标表（四模型）
-all_metrics <- dplyr::bind_rows(
-  logit_metrics, rf_metrics, lgbm_metrics, xgb_metrics
-) %>%
-  dplyr::filter(.metric %in% c("roc_auc","accuracy","sens","spec","precision","f_meas")) %>%
-  dplyr::arrange(model, .metric)
-all_metrics
-
-# ROC（测试集）
-all_preds <- dplyr::bind_rows(
-  logit_pred, rf_pred, lgbm_pred, xgb_pred
-)
-
-all_preds %>%
-  dplyr::group_by(model) %>%
-  roc_curve(truth = retained_binary, .pred_1, event_level = "second") %>%
-  autoplot() +
-  labs(title = "ROC (Test) — Logistic vs RF vs LightGBM vs XGBoost",
-       x = "1 - Specificity", y = "Sensitivity") +
-  theme_minimal()
-
-# （可选）三模型混淆矩阵，Logistic 你也可以用同一方式取出
-rf_cm   <- rf_final_fit$.predictions[[1]]   %>% conf_mat(truth = retained_binary, estimate = .pred_class)
-lgbm_cm <- lgbm_final_fit$.predictions[[1]] %>% conf_mat(truth = retained_binary, estimate = .pred_class)
-xgb_cm  <- xgb_final_fit$.predictions[[1]]  %>% conf_mat(truth = retained_binary, estimate = .pred_class)
-rf_cm; lgbm_cm; xgb_cm
-
-```
-
-  
 -- Findings & Result Analysis
 
 -- Recommendations & Strategy
