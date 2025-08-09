@@ -40,6 +40,7 @@ library(tidyverse)
 library(knitr)
 library(tinytex)
 library(skimr)
+library(psych)
 ```
 
 -- Introduction
@@ -50,6 +51,14 @@ library(skimr)
 ############ loading data & data processing ############
 data <- read.csv("customers.csv")
 
+# ---- Basic NA summary ----
+missing_summary <- data %>%
+  summarise(across(everything(),
+                   ~ sum(is.na(.)),
+                   .names = "na_{col}"))
+
+
+
 # remove string 'week'
 data$weeks_since_signup <- as.numeric(gsub(" weeks", "", data$weeks_since_signup))
 data$weeks_since_last_purchase <- as.numeric(gsub(" weeks", "", data$weeks_since_last_purchase))
@@ -59,10 +68,24 @@ data$weeks_since_last_purchase <- as.numeric(gsub(" weeks", "", data$weeks_since
 data$avg_AddOnpurchase_value <- as.numeric(gsub("[$]", "", data$avg_AddOnpurchase_value))
 
 
+
+
+
 # gender type (3 types)
 n_distinct(data$gender)
 unique(data$gender) 
 # "Female"   ///    "Prefer Not to Answer / Other / Unknown"    ///   "Male" 
+
+data <- data %>% 
+  mutate(
+    gender = case_when(
+      gender == "Female" ~ "Female",
+      gender == "Male"   ~ "Male",
+      TRUE               ~ "Other"   # 把剩下的都归到 Other
+    )
+  )
+unique(data$gender) 
+# "Female"   ///   Other   ///   "Male" 
 
 
 # support ticket type (3 types)
@@ -76,6 +99,20 @@ n_distinct(data$satisfaction_survey)
 unique(data$satisfaction_survey) 
 # 1 / 2 / 3 / 4 / 5 / NoResponse
 
+data <- data %>% 
+  mutate(
+    # 先把 NoResponse 改成字符 “0”
+    satisfaction_survey = recode(
+      satisfaction_survey,
+      "NoResponse" = "0",
+      .default     = satisfaction_survey
+    ),
+    # 再把整个列转成整数型
+    satisfaction_survey = as.integer(satisfaction_survey)
+  )
+unique(data$satisfaction_survey) 
+# 1 / 2 / 3 / 4 / 5 / NoResponse (0)
+
 
 # subscription type (5 types)
 n_distinct(data$subscription)
@@ -87,19 +124,221 @@ unique(data$subscription)
 n_distinct(data$payment)
 unique(data$payment) 
 # "DebitCard"  "CreditCard" "AppPay"  
-```
 
 
-```{R}
+#only take "weeks_since_last_purchase" equals or over 0
+filter_data <- data %>% filter(weeks_since_last_purchase >= 0)
+
+
 # View(data)
-skim(data)
+filter_data %>%
+  count(retained_binary) %>%
+  mutate(pct = n / sum(n) * 100)
+```
 
-data %>% filter(weeks_since_last_purchase < 0) %>% nrow() 
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 
+# 
+categorical_vars <- c(
+  "gender",
+  "support_ticket",
+  "opened_last_email",
+  "subscription_payment_problem_last4Weeks",
+  "last_login_device",
+  "last_browser",
+  "location",
+  "subscription",
+  "payment_type"
+)
 
+numeric_vars <- c(
+  "app_visits",
+  "website_visits",
+  "social_media_comments",
+  "social_media_posts",
+  "social_media_likes",
+  "social_media_shares",
+  "subscription_meals_per_week",
+  "subscription_people",
+  "weeks_since_signup",
+  "weeks_since_last_purchase",
+  "num_purchases",
+  "discounted_rate_last_purchase",
+  "avg_AddOnpurchase_value"
+)
 
 ```
 
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+
+# ---- 数值型概览 ----
+num_summary <- psych::describe(filter_data %>% select(any_of(numeric_vars)))
+
+# 输出成表（knitr）
+kable(num_summary, caption = "数值变量描述统计")
+
+```
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+
+# 批量 Mann–Whitney 检验
+num_test_results <- map_dfr(numeric_vars, function(v) {
+  ok <- complete.cases(filter_data[[v]], filter_data$retained_binary)
+  group1 <- filter_data[[v]][ok & filter_data$retained_binary == 1]
+  group0 <- filter_data[[v]][ok & filter_data$retained_binary == 0]
+  
+  test <- wilcox.test(group1, group0)
+  
+  tibble(
+    variable = v,
+    p_value = test$p.value,
+    median_retained = median(group1, na.rm = TRUE),
+    median_churned = median(group0, na.rm = TRUE)
+  )
+}) %>%
+  arrange(p_value) %>%
+  mutate(significant = ifelse(p_value < 0.05, "Yes", "No"))
+
+# 看前 5 个最显著的数值变量
+head(num_test_results, 5)
+```
+
+```{r}
+
+library(ggplot2)
+
+# 定义阈值（这里用中位数）
+x_median <- median(filter_data$weeks_since_last_purchase, na.rm = TRUE)
+y_median <- median(filter_data$num_purchases, na.rm = TRUE)
+
+ggplot(filter_data, aes(
+  x = weeks_since_last_purchase,
+  y = num_purchases,
+  color = factor(retained_binary)
+)) +
+  geom_point(alpha = 0.4) +
+  geom_vline(xintercept = x_median, linetype = "dashed", color = "grey40") +
+  geom_hline(yintercept = y_median, linetype = "dashed", color = "grey40") +
+  annotate("text", x = x_median * 0.5, y = y_median * 1.5, label = "高购买 / 近期活跃", color = "black") +
+  annotate("text", x = x_median * 1.5, y = y_median * 1.5, label = "高购买 / 久未购买", color = "black") +
+  annotate("text", x = x_median * 0.5, y = y_median * 0.5, label = "低购买 / 近期活跃", color = "black") +
+  annotate("text", x = x_median * 1.5, y = y_median * 0.5, label = "低购买 / 久未购买", color = "black") +
+  scale_color_manual(values = c("0" = "red", "1" = "blue"),
+                     labels = c("流失", "留存")) +
+  labs(
+    x = "距离上次购买的周数",
+    y = "总购买次数",
+    color = "留存状态",
+    title = "客户分布象限图",
+    subtitle = "按总购买次数和最近购买时间划分客户类型"
+  ) +
+  theme_minimal()
+
+```
+
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+
+# 以 gender 为例
+tbl1 <- table(filter_data$gender, filter_data$retained_binary)
+chisq.test(tbl1)
+
+# 以 support_ticket 为例
+tbl2 <- table(filter_data$support_ticket, filter_data$retained_binary)
+chisq.test(tbl2)
+
+# 以 open_last_email 为例
+tbl3 <- table(filter_data$opened_last_email, filter_data$retained_binary)
+chisq.test(tbl3)
+
+# 以 subscription_payment_problem_last4weeks 为例
+tbl4 <- table(filter_data$subscription_payment_problem_last4Weeks, filter_data$retained_binary)
+chisq.test(tbl4)
+
+# 以 last_login_device 为例
+tbl5 <- table(filter_data$last_login_device, filter_data$retained_binary)
+chisq.test(tbl5)
+
+# 以 last_browser 为例
+tbl6 <- table(filter_data$last_browser, filter_data$retained_binary)
+chisq.test(tbl6)
+
+# 以 location 为例
+tbl7 <- table(filter_data$location, filter_data$retained_binary)
+chisq.test(tbl7)
+
+# 以 subscription 为例
+tbl8 <- table(filter_data$subscription, filter_data$retained_binary)
+chisq.test(tbl8)
+
+# 以 payment_type 为例
+tbl9 <- table(filter_data$payment_type, filter_data$retained_binary)
+chisq.test(tbl9)
+
+```
+
+```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+
+#
+ggplot(filter_data, aes(x = gender, fill = factor(retained_binary))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
+
+#
+ggplot(filter_data, aes(x = support_ticket, fill = factor(retained_binary))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
+
+#
+ggplot(filter_data, aes(x = opened_last_email, fill = factor(retained_binary))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
+
+
+#
+ggplot(filter_data, aes(x = subscription_payment_problem_last4Weeks, fill = factor(retained_binary))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
+
+
+#
+ggplot(filter_data, aes(x = last_login_device, fill = factor(retained_binary))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
+
+
+#
+ggplot(filter_data, aes(x = last_browser, fill = factor(retained_binary))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
+
+#
+ggplot(filter_data, aes(x = location, fill = factor(retained_binary))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
+
+
+#
+ggplot(filter_data, aes(x = subscription, fill = factor(retained_binary))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
+
+
+#
+ggplot(filter_data, aes(x = payment_type, fill = factor(retained_binary))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
+```
 
 -- Findings & Result Analysis
 
