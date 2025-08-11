@@ -1,0 +1,648 @@
+---
+title:  "BUSINFO 704 2025 Q3 Week 7 Classification of  Credit Card Defaults"
+author: "Dr Sarah Marshall"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    number-depth: 3
+    toc-location: right
+execute:
+  cache: false  
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+# Overview {.unnumbered}
+
+This document demonstrates the parameter tuning for three algorithms: Neural Networks, Support Vector Machines and LightGBM using credit card default data. 
+
+
+The original version of this file uses a sample of 1000 observations (from the available 10000). It also uses under-sampling (`step_downsample`). These decisions speed up the computation time, however also reduce model accuracy. Alternative modelling decisions will be explored in the lab.
+  
+Note: this document is designed to document the workflow, rather than
+communicate results in a report format. As such, code and output will be
+shown in the rendered document.
+
+```{r}
+#| label: setup
+#| echo: true
+#| results: hide
+#| message: false
+
+# Set options
+
+name_of_this_file <- "week07_example_default"  
+figprefix = paste('Rfigs/', paste0(name_of_this_file, "_"), sep="")
+
+
+# set options for installing packages 
+# TRUE: packages will get downloaded during knitting (not recommended)
+# FALSE: run code below to check required packages are installed prior to knitting.
+install_packages <- FALSE  
+
+# set options for rendering
+# more info: https://yihui.org/knitr/options/#chunk-options
+knitr::opts_chunk$set(
+               echo = TRUE,        # show code
+               message = FALSE,    # hide messages
+               warning = FALSE,    # hide warnings
+               fig.path=figprefix, # save figures
+               fig.align='center', # figure alignment
+               fig.show='hold',    # print figures at the end of each chunk
+               out.width="70%",    # figure width, % of page
+               fig.width=8,        # figure width
+               fig.height=4.5,     # figure height
+               size='footnotesize' # Font size for chunk output
+               )
+               
+# set options for printing within rendered document
+opt_width = 70 #60
+options(width = opt_width,  
+        pillar.print_min = 6,  
+        pillar.print_max = 10
+        )
+
+
+# Required packages
+packages_needed <-  c( 
+        #"tidyverse",
+        "GGally",
+        "tidymodels",        # modelling functions
+        "ISLR",              # data
+        "themis",            # recipe steps for unbalanced data
+        "NeuralNetTools",    # Neural networks
+        "nnet",
+        "vip",
+        "lightgbm", "bonsai" # lightgbm        
+        )
+
+# Identify required packages that are not currently installed
+packages_to_install <- packages_needed[
+                          !packages_needed %in% installed.packages()
+                          ]
+
+# Install required packages
+if(install_packages){
+  sapply(packages_to_install, 
+         install.packages,
+         dependencies=TRUE, 
+         repos="https://cloud.r-project.org")
+}
+
+# load all required packages
+sapply(packages_needed, require, character=TRUE)
+
+# request that tidymodels functions are given preference
+tidymodels_prefer()
+
+```
+
+
+
+# Data 
+
+
+## Data Preparation
+
+ 
+
+```{r}
+#| label: load-data
+library(ISLR)                # 加载包
+set.seed(672025)
+
+data(Default)
+
+glimpse(Default)
+```
+
+## Data Understanding
+
+```{r}
+#| label: plot-data
+#| out-width: "100%"
+
+Default |> 
+  ggpairs(aes(colour=default, alpha = 0.5))
+```
+
+
+There are two classes. Notice the class imbalance.
+
+```{r}
+Default |>  count(default)
+```
+
+We will re-order the factor levels for simplicity. 
+We will also take a sample of the data to improve the initial run-time. 
+It is recommended to run on the full dataset later.
+
+
+```{r}
+Default2 <- Default |> 
+  mutate(default = factor(default, levels = c("Yes", "No"))) |> 
+  slice_sample(n = 1000)
+```
+
+```{r}
+Default2 |>  count(default)
+```
+
+# Pre-processing
+
+Partition the data using 80% training, 20% testing.
+
+Stratified based on class.
+
+```{r}
+#| label: data_partition
+
+set.seed(234234)
+
+# Split 80% of the data into the training set 
+split <- initial_split(Default2, strata = default)
+
+
+# Create data frames for the three sets:
+train_data <- training(split)
+test_data  <- testing(split)
+
+# 5-fold CV
+folds <- vfold_cv(train_data, v = 5, strata = default)
+```
+
+
+
+# Modelling 
+
+
+## Recipe
+
+```{r}
+#| label: specify-recipe
+install.packages("themis")  # 如果没装过
+library(themis)             # 加载后才能用 step_downsample
+
+default_rec <- recipe(default ~ ., data = train_data) |>
+  #step_upsample(default, over_ratio = 1) |>   # note: increases computation time
+  step_downsample(default, under_ratio = 1) |> # note: decreases amount of data used
+  step_normalize(all_numeric_predictors()) |>    
+  # create dummy variables for nominal predictors
+  step_dummy(all_nominal_predictors())|> 
+  # remove zero variance predictors
+  step_zv(all_predictors())   
+
+
+```
+
+
+```{r}
+default_prepped <- 
+default_rec |> 
+  prep() |> 
+  bake(new_data = NULL) 
+
+default_prepped |> glimpse()
+default_prepped |>  count(default)
+default_prepped  |>  summary()
+```
+
+Notice that the mean of the numeric variables is 0.
+
+
+## Create model and workflow
+
+### Neural Network
+
+
+We will tune on 2 parameters: `hidden_units` and `penalty`.
+
+
+* `hidden_units` represents the number of neurons in the hidden layer.  Higher values can capture more complex relationships, but can lead to over-fitting. Lower values result in a simpler model, but risk under-fitting.
+* `penalty` represents the weight decay Higher values lead to a simpler model (more weight decay) and lower values provide more flexibility, but can lead to over-fitting. 
+
+
+```{r}
+#| label: nn_recipe_model
+
+nn_spec <- 
+  mlp(hidden_units = tune(), penalty = tune(), epochs = 500) |>
+  set_engine("nnet", trace = FALSE) |>
+  set_mode("classification")
+
+nn_wf <- workflow() |>
+  add_model(nn_spec) |>
+  add_recipe(default_rec)
+
+nn_grid <- grid_regular(hidden_units(), penalty(), levels = c(4, 3))
+
+
+
+```
+
+
+### SVM
+
+We will tune on 2 parameters: `cost` and `rbf_sigma`.
+
+
+* Higher values of `cost` mean a greater penalty for misclassification. If cost is too high, it can lead to over-fitting. Lower values of `cost` result in a simpler model, but risk underfitting.
+* Higher values of `rbf_sigma` mean that a smaller radius is used, and the decision boundary is sensitive to individual observations. Can lead to over-fitting. Lower values provide a smoother decision boundary, but can lead to under-fitting.
+
+
+```{r}
+svm_spec <- 
+  svm_rbf(cost = tune(), rbf_sigma = tune()) |>
+  set_engine("kernlab") |>
+  set_mode("classification")
+
+svm_wf <- workflow() |>
+  add_model(svm_spec) |>
+  add_recipe(default_rec)
+
+svm_grid <- grid_regular(cost(), rbf_sigma(), levels = 3)
+
+```
+
+
+
+### LightGBM
+
+We will tune on 2 parameters: `learn_rate` and `trees`.
+
+* `learn_rate` controls how much each tree contributes to the final model. Smaller values of `learn_rate` mean learning happens more slowly, but does provide better generalisation. Higher values mean faster learning, but can lead to over fitting
+* `trees` controls the number of trees.
+
+
+ 
+```{r}
+#| label: lgbm-model-defn
+
+lgbm_spec <- 
+  boost_tree(
+  learn_rate = tune(),
+  trees = tune()
+  ) |>
+  set_engine("lightgbm") |>
+  set_mode("classification") 
+
+lgbm_wf <- 
+  workflow() |> 
+  add_model(lgbm_spec) |> 
+  add_recipe(default_rec)
+
+lgbm_grid <- grid_regular(learn_rate(), trees(), levels = c(4, 3))
+``` 
+ 
+
+## Fit models on training data
+
+```{r}
+# install.packages("kernlab")
+library(kernlab)
+```
+
+
+```{r}
+#| label: train
+
+set.seed(9876)
+
+Sys.time()
+
+nn_res <- tune_grid(
+  nn_wf,
+  resamples = folds,
+  grid = nn_grid,
+  metrics = metric_set(roc_auc, accuracy, sens, spec),
+   # save predictions
+    control = control_grid(save_pred = TRUE)
+)
+nn_pred <- nn_res |>  collect_predictions()
+ 
+Sys.time()
+
+
+svm_res <- tune_grid(
+  svm_wf,
+  resamples = folds,
+  grid = svm_grid,
+  metrics = metric_set(roc_auc, accuracy, sens, spec),
+   # save predictions
+    control = control_grid(save_pred = TRUE)
+)
+
+svn_pred <- svm_res |>  collect_predictions()
+ 
+Sys.time()
+
+
+lgbm_res <- tune_grid(
+  lgbm_wf,
+  resamples = folds,
+  grid = lgbm_grid,
+  metrics = metric_set(roc_auc, accuracy, sens, spec),
+   # save predictions
+    control = control_grid(save_pred = TRUE)
+)
+
+lgbm_pred <- lgbm_res |>  collect_predictions()
+ 
+Sys.time()
+
+```
+
+
+
+####  ROC curves for training
+
+
+ 
+```{r}
+#| label: roc-train-nn
+#| out-width: "70%"
+
+nn_pred |>
+  group_by(id, hidden_units, penalty) |># id contains folds
+  roc_curve(truth = default, .pred_Yes) |>
+  autoplot() +
+  facet_grid(rows = vars(hidden_units), cols = vars(penalty)) +
+  theme(legend.position = "none")  +
+  labs(title = "ROC Curve for Neural Network",
+       subtitle = "Predicting Credit Card Default")
+```
+
+```{r}
+#| label: roc-train-svm
+#| out-width: "70%"
+
+svn_pred |>
+  group_by(id, cost, rbf_sigma) |># id contains folds
+  roc_curve(truth = default, .pred_Yes) |>
+  autoplot() +
+  facet_grid(rows = vars(cost), cols = vars(rbf_sigma)) + 
+  theme(legend.position = "none") +
+  labs(title = "ROC Curve for Support Vector Machine",
+       subtitle = "Predicting Credit Card Default")
+
+```
+
+```{r}
+#| label: roc-train-lgbm
+#| out-width: "70%"
+
+lgbm_pred |>
+  group_by(id, learn_rate, trees) |># id contains folds
+  roc_curve(truth = default, .pred_Yes) |>
+  autoplot() +
+  facet_grid(rows = vars(learn_rate), cols = vars(trees)) +
+  theme(legend.position = "none") +
+  labs(title = "ROC Curve for LightGBM",
+       subtitle = "Predicting Credit Card Default") 
+```
+
+**Plot metrics**
+
+```{r}
+#| label: train-metrics
+
+nn_res |>
+  collect_metrics() |>
+  mutate(hidden_units = factor(hidden_units),
+         penalty = factor(penalty)) |>
+  ggplot(aes(hidden_units, mean, color = penalty, group = penalty)) +
+  geom_line(linewidth = 1.5) +
+  geom_point(size = 2) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0)+
+  facet_grid(rows =  vars(.metric))
+
+
+svm_res |>
+  collect_metrics() |>
+  mutate(cost = factor(cost)
+         , rbf_sigma = factor(rbf_sigma)
+         ) |>
+  ggplot(aes(cost, mean, color = rbf_sigma, group = rbf_sigma)) +
+  geom_line(linewidth = 1.5) +
+  geom_point(size = 2) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0)+
+  facet_grid(rows =  vars(.metric))
+
+lgbm_res |>
+  collect_metrics() |>
+  mutate(learn_rate = factor(learn_rate)
+         , trees = factor(trees)
+         ) |>
+  ggplot(aes(learn_rate, mean, color = trees, group = trees)) +
+  geom_line(linewidth = 1.5) +
+  geom_point(size = 2) +
+  scale_color_viridis_d(option = "plasma", begin = .9, end = 0)+
+  facet_grid(rows =  vars(.metric))
+ 
+```
+ 
+For the original parameter values: 
+
+**NN**
+
+* Penalty = 1 is consistently the best
+* Hidden Units = 1 gives better accuracy and specificity, 4 gives better sensitivity
+
+
+
+**SVM**
+
+* rbf sigma = 1 is only value with sensible ROC
+* Cost = lower two values are better than 32
+
+
+**LightGBM**
+
+* Trees = 1000 and 2000 give better ROC
+* Learn Rate = 0.1 gives best ROC
+
+## Select Final Model
+
+```{r}
+#| label: select-final
+
+
+nn_best <- select_best(nn_res, metric = "roc_auc")
+
+## alternatively, manually specify selected model
+# nn_best <- tibble(
+#   hidden_units = 1,
+#   penalty  = 1,
+#   rowNumber = 16, #obtain from nn_grid
+#   .config = paste0("Preprocessor1_Model", 
+#    ifelse(rowNumber<10, "0", ""), rowNumber)
+# )
+ 
+
+# Final NN model
+nn_final_wf <- nn_wf |> 
+  finalize_workflow(nn_best) 
+
+
+# svm_best <- select_best(svm_res, metric = "roc_auc")
+
+# Final SVM model
+# svm_final_wf <- svm_wf |> finalize_workflow(svm_best) 
+
+
+lgbm_best <- select_best(lgbm_res, metric = "roc_auc")
+
+# Final SVM model
+lgbm_final_wf <- lgbm_wf |> finalize_workflow(lgbm_best) 
+
+
+```
+
+
+# Evaluate
+Do a final fit for each model (train on all training data and test on testing data)
+
+```{r}
+#| label: final-fit
+
+nn_final_fit <- 
+  nn_final_wf |>
+  last_fit(split , metrics = metric_set(roc_auc, accuracy, sens, spec))
+
+
+# svm_final_fit <- 
+#   svm_final_wf |>
+#   last_fit(split,   metrics = metric_set(roc_auc, accuracy, sens, spec))
+
+
+lgbm_final_fit <- 
+  lgbm_final_wf |>
+  last_fit(split,   metrics = metric_set(roc_auc, accuracy, sens, spec))
+```
+
+
+## Assess performance
+```{r}
+#| label: collect-final-preds
+
+nn_final_pred  <- nn_final_fit |> 
+  collect_predictions()  |>
+  mutate(model = "NN")
+
+# svm_final_pred  <- svm_final_fit |> 
+#   collect_predictions()   |>
+#   mutate(model = "SVM")
+
+lgbm_final_pred  <- lgbm_final_fit |> 
+  collect_predictions()   |>
+  mutate(model = "LGBM")
+
+
+# Combine all predictions into a tibble
+all_preds <- bind_rows(nn_final_pred, lgbm_final_pred)
+```
+
+
+Notice that there are only 7 defaults in the test dataset. 
+Increasing the sample size is recommended in order to verify the model performance on a larger dataset.
+
+### Metrics
+
+```{r}
+#| label: final-metrics
+
+nn_final_fit |>   collect_metrics()
+# svm_final_fit |>   collect_metrics()
+lgbm_final_fit |>   collect_metrics()
+
+```
+
+When deciding which model is best, it is important to weigh up the 
+importance of sensitivity vs specificity.
+For example, is it worth it to correctly classify 2 extra customers as likely to "default",
+if that means that an extra 50 customers will be incorrectly classified as likely to "default".
+
+This trade-off will depend on the scenario and the costs involved in each situation.
+
+### Confusion Matrix
+
+```{r}
+#| label: final-conf-mat
+
+nn_final_fit$.predictions[[1]]  |>  
+   conf_mat(truth = default, estimate = .pred_class)
+
+# svm_final_fit$.predictions[[1]]  |>  
+#    conf_mat(truth = default, estimate = .pred_class)
+
+lgbm_final_fit$.predictions[[1]]  |>  
+   conf_mat(truth = default, estimate = .pred_class)
+```
+
+
+### ROC for Test
+
+```{r}
+#| label: final-roc
+
+all_preds |>
+  group_by(model) |> 
+  roc_curve(truth = default, .pred_Yes)  |> 
+  autoplot() +
+  ggtitle("ROC Curve: SVM,  NN vs LGBM")
+
+```
+
+
+# Alternative modelling decisions
+
+A summary of results for alternative modelling decisions. Results may vary if different seeds are used.
+
+
+* `step_downsample`, sample of 1000, 5 folds: 
+
+   - computation time
+     - NN: 5 sec
+     - SVM: 5 sec
+     - LightGBM: 15 sec
+   - test performance (acc/sens/spec/roc_auc)
+     - NN:  0.86, 0.714, 0.864, 0.893
+     - SVM:  0.844, 0.714, 0.848, 0.896
+     - LightGBM: 0.852, 0.571, 0.86, 0.812
+
+* `step_upsample`, sample of 1000, 5 folds: 
+
+   - computation time
+     - NN: 15 sec
+     - SVM: 15 sec
+     - LightGBM: 45 sec
+   - test performance (acc/sens/spec/roc_auc)
+     - NN:  0.852, 0.714, 0.856, 0.889
+     - SVM:  0.78, 0.714, 0.782, 0.895
+     - LightGBM:  0.924, 0.571, 0.934, 0.757  
+
+
+* `step_upsample`, whole dataset, 5 folds: 
+
+   - approximate computation time
+     - NN: 1 min
+     - SVM: 8 min
+     - LightGBM: 2.5 min 
+   - test performance (acc/sens/spec/roc_auc)
+     - NN:  0.870/0.819/0.872/0.940
+     - SVM: 0.856/0.843/0.856/0.939
+     - LightGBM: 0.963/0.361/0.983/0.892 (note poor sens)    
+
+* `step_downsample`, whole dataset, 5 folds: 
+
+   - approximate computation time
+     - NN: 10 sec
+     - SVM: 10 sec 
+     - LightGBM: 45 sec
+   - test performance (acc/sens/spec/roc_auc)
+     - NN:   0.861, 0.819, 0.862, 0.938
+     - SVM:  0.848, 0.831, 0.848, 0.931
+     - LightGBM: 0.875, 0.831, 0.876, 0.905   

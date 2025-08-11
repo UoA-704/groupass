@@ -42,6 +42,11 @@ if (!require("bonsai")) install.packages("bonsai")
 if (!require("lightgbm")) install.packages("lightgbm") 
 if (!require("xgboost"))  install.packages("xgboost")
 if (!require("broom"))  install.packages("broom")
+if (!require("klaR"))  install.packages("klaR")
+if (!require("discrim"))  install.packages("discrim")
+if (!require("patchwork")) install.packages("patchwork")
+if (!require("yardstick")) install.packages("yardstick")
+if (!require("glmnet")) install.packages("glmnet")
 library(tidymodels)
 library(tidyverse)
 library(knitr)
@@ -52,6 +57,11 @@ library(vip)
 library(bonsai)
 library(ranger)
 library(broom)
+library(discrim)  # 一定要加载，否则 parsnip 找不到这个模型
+library(klaR)
+library(patchwork)
+library(yardstick)
+library(glmnet)
 ```
 
 -- Introduction
@@ -97,6 +107,12 @@ data <- data %>%
 unique(data$gender) 
 # "Female"   ///   Other   ///   "Male" 
 
+# subscription_payment_problem_last4Weeks (0 / 1)
+data <- data %>%
+  mutate(
+    subscription_payment_problem_last4Weeks =
+      as.integer(subscription_payment_problem_last4Weeks == "TRUE")
+  )
 
 # support ticket type (3 types)
 n_distinct(data$support_ticket)
@@ -132,6 +148,7 @@ filter_data %>%
   mutate(pct = n / sum(n) * 100)
 ```
 
+
 ```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 
 categorical_vars <- c(
@@ -144,6 +161,7 @@ categorical_vars <- c(
   "location",
   "subscription",
   "discounted_rate_last_purchase",
+  "satisfaction_suvey",
   "payment_type"
 )
 
@@ -345,66 +363,72 @@ chisq.test(tbl10)
 
 ```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 
-#
+# gender
 ggplot(filter_data, aes(x = gender, fill = factor(retained_binary))) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
   labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
 
-#
+# support_ticket
 ggplot(filter_data, aes(x = support_ticket, fill = factor(retained_binary))) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
   labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
 
-#
+# opened_last_email
 ggplot(filter_data, aes(x = opened_last_email, fill = factor(retained_binary))) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
   labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
 
 
-#
+# subscription_payment_problem_last4Weeks
 ggplot(filter_data, aes(x = subscription_payment_problem_last4Weeks, fill = factor(retained_binary))) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
   labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
 
 
-#
+# last_login_device
 ggplot(filter_data, aes(x = last_login_device, fill = factor(retained_binary))) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
   labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
 
 
-#
+# last_browser
 ggplot(filter_data, aes(x = last_browser, fill = factor(retained_binary))) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
   labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
 
-#
+# location
 ggplot(filter_data, aes(x = location, fill = factor(retained_binary))) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
   labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
 
 
-#
+# subscription
 ggplot(filter_data, aes(x = subscription, fill = factor(retained_binary))) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
   labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
 
 
-#
+# payment_type
 ggplot(filter_data, aes(x = payment_type, fill = factor(retained_binary))) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
   labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
 
-#
+# satisfaction_survey
+ggplot(filter_data, aes(x = satisfaction_survey, fill = factor(retained_binary))) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(y = "Retention Rate", fill = "Retained (1=Yes, 0=No)")
+
+# discounted_rate_last_purchase
 ggplot(filter_data, aes(x = discounted_rate_last_purchase, fill = factor(retained_binary))) +
   geom_bar(position = "fill") +
   scale_y_continuous(labels = scales::percent) +
@@ -421,7 +445,8 @@ finalVariables <- c(
   "num_purchases",
   "location",
   "last_browser",
-  "subscription_payment_problem_last4Weeks"
+  "subscription_payment_problem_last4Weeks",
+  "satisfaction_survey"
 )
 
 ```
@@ -431,23 +456,17 @@ finalVariables <- c(
 # 因变量：保证 0=否, 1=是，且 1 在第二水平
 filter_data <- filter_data %>%
   mutate(
-    retained_binary = factor(retained_binary, levels = c(0, 1)),
-    subscription_payment_problem_last4Weeks = case_when(
-      subscription_payment_problem_last4Weeks %in% c(1, TRUE)  ~ "Yes",
-      subscription_payment_problem_last4Weeks %in% c(0, FALSE) ~ "No",
-      TRUE ~ NA_character_
-    )
-  ) %>% 
+    retained_binary = factor(retained_binary, levels = c(0, 1))) %>% 
   dplyr::select(retained_binary, all_of(finalVariables))
 
 
-set.seed(704)
+set.seed(12345)
 # ---------- 分层切分 80/20 ----------
 split <- initial_split(filter_data, prop = 0.8, strata = retained_binary)
 train_data <- training(split)
 test_data  <- testing(split)
 
-set.seed(704)
+set.seed(12345)
 subsplit <- initial_split(train_data,
                           prop = 10000 / nrow(train_data),
                           strata = retained_binary)
@@ -460,19 +479,15 @@ nrow(train_sample)   # 约等于 10000
 ```{r}
 
 # train smaple recipe
-rec_tune <- recipe(
-    retained_binary ~ ., 
-    data = train_sample %>% select(retained_binary, all_of(finalVariables))
-  ) %>%
+rec_tune <- recipe(retained_binary ~ ., data = train_sample) %>%
   step_string2factor(all_nominal_predictors()) %>%
   step_unknown(all_nominal_predictors()) %>%
-  step_novel(all_nominal_predictors()) %>%
   step_other(all_nominal_predictors(), threshold = 0.01) %>%
   step_dummy(all_nominal_predictors()) %>%
   step_impute_median(all_numeric_predictors()) %>%
   step_zv(all_predictors())
 
-set.seed(704)
+set.seed(12345)
 # fold 5 times
 folds <- vfold_cv(train_sample, v = 5, strata = retained_binary)
 
@@ -480,313 +495,385 @@ folds <- vfold_cv(train_sample, v = 5, strata = retained_binary)
 
 
 ```{r}
-# ---------- Logistic Regression ----------
 
-logit_mod <- logistic_reg(mode = "classification") |> set_engine("glm")
-wf <- workflow() |> add_recipe(rec_tune) |> add_model(logit_mod)
+run_model <- function(model_spec, grid_spec, folds, train, test, model_name) {
+  wf <- workflow() %>% add_recipe(rec_tune) %>% add_model(model_spec)
 
-# ---------- 训练 + 测试集评估 ----------
-fit <- fit(wf, data = train_sample)
-
-preds <- augment(fit, new_data = test_data)  # 包含 .pred_0 / .pred_1 / .pred_class
-
-# 混淆矩阵
-conf_mat(preds, truth = retained_binary, estimate = .pred_class)
-
-ctrl <- control_resamples(save_pred = TRUE)
-cv_res <- fit_resamples(
-  wf,
-  resamples = folds,
-  control   = ctrl,
-  metrics   = metric_set(accuracy, sens, spec, precision, f_meas, roc_auc)
-)
-
-collect_metrics(cv_res)         # 5 折的均值和标准误
-```
-
-
-```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
-
-# ---- LightGBM ----
-
-# 用 train_sample 做交叉验证
-# folds_tune <- vfold_cv(train_sample, v = 5, strata = retained_binary)
-
-lgbm_spec <- boost_tree(
-  learn_rate     = tune(),
-  trees          = tune(),
-  tree_depth     = tune(),
-  min_n          = tune(),
-  loss_reduction = tune()
-) %>% 
-  set_engine("lightgbm") %>% 
-  set_mode("classification")
-
-
-lgbm_wf <- workflow() %>% add_recipe(rec_tune) %>% add_model(lgbm_spec)
-
-# ⚠ finalize 也用 train_sample
-lgbm_param <- parameters(lgbm_spec) |> finalize(train_sample)
-
-set.seed(704)
-lgbm_grid <- grid_random(
-  learn_rate(range = c(-3, -0.5)),
-  trees(range = c(400L, 800L)),  # 控制树数
-  tree_depth(range = c(3L, 5L)),
-  min_n(range = c(2L, 20L)),
-  loss_reduction(range = c(-4, 1)),
-  size = 5
-)
-
-# 调参用 train_sample 的 folds
-lgbm_res <- tune_grid(
-  lgbm_wf, resamples = folds, grid = lgbm_grid,
-  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas),
-  control = control_grid(save_pred = TRUE)
-)
-
-# 选最优参数
-lgbm_best      <- select_best(lgbm_res, metric = "roc_auc")
-lgbm_final_wf  <- finalize_workflow(lgbm_wf, lgbm_best)
-
-# ⚠ 最终模型用全量 train/test split
-lgbm_final_fit <- last_fit(
-  lgbm_final_wf, split,
-  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas)
-)
-
-lgbm_metrics <- collect_metrics(lgbm_final_fit) %>% dplyr::mutate(model = "LightGBM")
-lgbm_pred    <- collect_predictions(lgbm_final_fit) %>% dplyr::mutate(model = "LightGBM")
-
-# 从调参阶段拿到每一折的 AUC
-cv_auc <- collect_predictions(lgbm_res, summarize = FALSE) %>%
-  group_by(id) %>%
-  yardstick::roc_auc(truth = retained_binary, .pred_1, event_level = "second")
-
-# 计算平均值 ± 标准差
-cv_auc %>%
-  summarise(
-    mean_auc = mean(.estimate),
-    sd_auc   = sd(.estimate)
+  res <- tune_grid(
+    wf, resamples = folds, grid = grid_spec,
+    metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas), 
+    control = control_grid(save_pred = TRUE, save_workflow = TRUE)
   )
 
+  best     <- select_best(res, metric = "roc_auc")
+  final_wf <- finalize_workflow(wf, best)
+  fit_tr   <- fit(final_wf, data = train)
+  preds_te <- augment(fit_tr, new_data = test)
+  
+  message("Training on: ", nrow(train), " rows | Testing on: ", nrow(test), " rows")
 
-print(lgbm_metrics)
-print(lgbm_pred)
-collect_metrics(lgbm_res)
-
-```
-
-
-```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
-
-# ---- XGBoost ----
-
-# 用 train_sample 生成交叉验证 folds
-# folds_tune <- vfold_cv(train_sample, v = 5, strata = retained_binary)
-
-xgb_spec <- boost_tree(
-  trees          = tune(),
-  tree_depth     = tune(),
-  learn_rate     = tune(),
-  mtry           = tune(),   # 列采样
-  min_n          = tune(),
-  loss_reduction = tune(),   # gamma
-  sample_size    = tune()    # 行采样
-) %>% 
-  set_engine("xgboost") %>% 
-  set_mode("classification")
-
-
-xgb_wf <- workflow() %>% add_recipe(rec_tune) %>% add_model(xgb_spec)
-
-# finalize 用 train_sample
-xgb_param <- parameters(xgb_spec) %>%  finalize(train_sample)
-
-# 随机搜索，5 个组合
-set.seed(704)
-xgb_grid <- grid_random(
-  trees(range = c(400L, 800L)),
-  tree_depth(range = c(3L, 5L)),
-  learn_rate(range = c(-3, -0.5)),
-  finalize(mtry(), train_sample),
-  min_n(range = c(2L, 20L)),
-  loss_reduction(range = c(-4, 1)),
-  sample_prop(range = c(0.6, 1.0)),  # ✅ 用比例参数
-  size = 5
-)
-
-# 调参用 folds
-xgb_res <- tune_grid(
-  xgb_wf, resamples = folds, grid = xgb_grid,
-  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas),
-  control = control_grid(save_pred = TRUE)
-)
-
-# 选最佳参数
-xgb_best      <- select_best(xgb_res, metric = "roc_auc")
-xgb_final_wf  <- finalize_workflow(xgb_wf, xgb_best)
-
-# 最终模型用全量 split
-xgb_final_fit <- last_fit(
-  xgb_final_wf, split,
-  metrics = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas)
-)
-
-xgb_metrics <- collect_metrics(xgb_final_fit) %>% dplyr::mutate(model = "XGBoost")
-xgb_pred    <- collect_predictions(xgb_final_fit) %>% dplyr::mutate(model = "XGBoost")
-
-# 从调参阶段拿到每一折的 AUC
-cv_auc <- collect_predictions(xgb_res, summarize = FALSE) %>%
-  group_by(id) %>%
-  yardstick::roc_auc(truth = retained_binary, .pred_1, event_level = "second")
-
-# 计算平均值 ± 标准差
-cv_auc %>%
-  summarise(
-    mean_auc = mean(.estimate),
-    sd_auc   = sd(.estimate)
+  test_metrics <- dplyr::bind_rows(
+    roc_auc  (preds_te, truth = retained_binary, .pred_1,     event_level = "second"),
+    accuracy (preds_te, truth = retained_binary, .pred_class, event_level = "second"),
+    sens     (preds_te, truth = retained_binary, .pred_class, event_level = "second"),
+    spec     (preds_te, truth = retained_binary, .pred_class, event_level = "second"),
+    precision(preds_te, truth = retained_binary, .pred_class, event_level = "second"),
+    f_meas   (preds_te, truth = retained_binary, .pred_class, event_level = "second")
   )
 
+  # ← 5 折平均（只保留最优参数那组），有 mean / std_err
+  cv_metrics <- res %>%
+    collect_metrics() %>%
+    dplyr::semi_join(best, by = ".config") %>%
+    dplyr::select(.metric, mean, std_err)
 
-xgb_metrics
-xgb_pred
+  cv_roc <- collect_predictions(res, summarize = FALSE) %>%
+    dplyr::semi_join(best, by = ".config") %>%
+    dplyr::mutate(retained_binary = factor(retained_binary, levels = c("0","1"))) %>%
+    dplyr::group_by(id) %>%
+    yardstick::roc_curve(truth = retained_binary, .pred_1, event_level = "second") %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(model = model_name)
+
+  list(best_params = best, cv_metrics = cv_metrics, test_metrics = test_metrics, cv_roc = cv_roc)
+}
 
 ```
 
-```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 
-# —— 从调参对象里取“每折”的预测，然后算每折 ROC —— 
-lgbm_cv_roc <- collect_predictions(lgbm_res, summarize = FALSE) %>%
-  dplyr::group_by(id) %>%
-  yardstick::roc_curve(truth = retained_binary, .pred_1, event_level = "second") %>%
-  dplyr::mutate(model = "LightGBM")
+```{r}
+# -------------------
+# 1. LightGBM
+# -------------------
 
-xgb_cv_roc <- collect_predictions(xgb_res, summarize = FALSE) %>%
-  dplyr::group_by(id) %>%
-  yardstick::roc_curve(truth = retained_binary, .pred_1, event_level = "second") %>%
-  dplyr::mutate(model = "XGBoost")
+start_time <- Sys.time()
 
+lgbm_result <- run_model(
+  boost_tree(
+    learn_rate     = tune(),
+    trees          = tune(),
+    tree_depth     = tune(),
+    min_n          = tune(),
+    loss_reduction = tune()
+  ) %>% set_engine("lightgbm") %>% set_mode("classification"),
+  
+  grid_random(
+    learn_rate(range = c(-3, -0.5)),
+    trees(range = c(400L, 1000L)),
+    tree_depth(range = c(3L, 6L)),
+    min_n(range = c(2L, 20L)),
+    loss_reduction(range = c(-4, 1)),
+    size = 10
+  ),
+  
+  folds,
+  train_sample,
+  test_data,
+  "LightGBM"
+)
+
+end_time <- Sys.time()
+runtime <- end_time - start_time
+print(runtime)
+
+lgbm_result
+
+
+```
+
+
+```{r}
+
+# -------------------
+# 2. XGBoost
+# -------------------
+
+start_time <- Sys.time()
+
+xgb_result <- run_model(
+  boost_tree(
+    trees          = tune(),
+    tree_depth     = tune(),
+    learn_rate     = tune(),
+    mtry           = tune(),
+    min_n          = tune(),
+    loss_reduction = tune(),
+    sample_size    = tune()
+  ) %>% set_engine("xgboost") %>% set_mode("classification"),
+  
+  grid_random(
+    trees(range = c(400L, 1000L)),
+    tree_depth(range = c(3L, 6L)),
+    learn_rate(range = c(-3, -0.5)),
+    finalize(mtry(), train_sample),
+    min_n(range = c(2L, 20L)),
+    loss_reduction(range = c(-4, 1)),
+    sample_prop(range = c(0.6, 1.0)),
+    size = 10
+  ),
+  
+  folds,
+  train_sample,
+  test_data,
+  "XGBoost"
+)
+
+end_time <- Sys.time()
+runtime <- end_time - start_time
+print(runtime)
+
+xgb_result
+
+```
+
+
+```{r}
+
+# -------------------
+# 3. 随机森林
+# -------------------
+
+start_time <- Sys.time()
+
+rf_result <- run_model(
+  rand_forest(
+    mtry  = tune(),
+    trees = tune(),
+    min_n = tune()
+  ) %>% set_engine("ranger") %>% set_mode("classification"),
+  
+  grid_random(
+    finalize(mtry(), train_sample),
+    trees(range = c(500L, 1500L)),
+    min_n(range = c(2L, 20L)),
+    size = 10
+  ),
+  
+  folds,
+  train_sample,
+  test_data,
+  "Random Forest"
+)
+
+end_time <- Sys.time()
+runtime <- end_time - start_time
+print(runtime)
+
+
+rf_result
+
+```
+
+
+```{r}
+
+# -------------------
+# 4. Naive Bayes
+# -------------------
+
+start_time <- Sys.time()
+
+nb_result <- run_model(
+  naive_Bayes(
+    smoothness = tune(),
+    Laplace    = tune()
+  ) %>% set_engine("klaR") %>% set_mode("classification"),
+  
+  grid_random(
+    smoothness(range = c(0, 2)),
+    Laplace(range = c(0, 2)),
+    size = 10
+  ),
+  
+  folds,
+  train_sample,
+  test_data,
+  "Naive Bayes"
+)
+
+end_time <- Sys.time()
+runtime <- end_time - start_time
+print(runtime)
+
+
+nb_result
+
+```
+
+```{r}
+
+
+# -------------------
+# Logistic Regression
+# -------------------
+
+start_time <- Sys.time()
+
+logit_result <- run_model(
+  logistic_reg(
+    penalty = tune(),   # 正则强度：10^(-4 ~ -0.5)
+    mixture = tune()    # 0=L2, 1=L1, (0,1)=Elastic Net
+  ) %>% 
+    set_engine("glmnet") %>% 
+    set_mode("classification"),
+  
+  grid_random(
+    penalty(range = c(-4, -0.5)),
+    mixture(range = c(0, 1)),
+    size = 10
+  ),
+  
+  folds,
+  train_sample,
+  test_data,
+  "Logistic"
+)
+
+end_time <- Sys.time()
+runtime <- end_time - start_time
+print(runtime)
+
+
+logit_result
+```
+
+
+
+```{r}
+
+# logit regression
 logit_cv_roc <- collect_predictions(cv_res, summarize = FALSE) %>%
   dplyr::group_by(id) %>%
   yardstick::roc_curve(truth = retained_binary, .pred_1, event_level = "second") %>%
   dplyr::mutate(model = "Logistic")
 
-cv_roc <- dplyr::bind_rows(lgbm_cv_roc, xgb_cv_roc, logit_cv_roc)
+# -------------------
+# 合并所有 ROC 数据
+# -------------------
+cv_roc_all <- bind_rows(
+  lgbm_result$cv_roc,
+  xgb_result$cv_roc,
+  rf_result$cv_roc,
+  nb_result$cv_roc,
+  logit_cv_roc
+)
+
+
 ```
+
 
 ```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 
-
-ggplot(cv_roc, aes(x = 1 - specificity, y = sensitivity,
-                   group = interaction(model, id), color = model)) +
-  geom_path(alpha = 0.6) +
-  geom_abline(linetype = 3) +
-  labs(title = "ROC by Fold (5-fold CV)", x = "1 - Specificity", y = "Sensitivity") +
-  theme_minimal()
+ggplot(cv_roc_all, aes(x = 1 - specificity, y = sensitivity, color = id, group = id)) +
+  geom_path(alpha = 0.5, linewidth = 0.5) +   # 线条更粗一点
+  geom_abline(linetype = "dashed", color = "grey50") +
+  facet_wrap(~ model, ncol = 3) +             # 3列显示
+  labs(
+    title = "Cross-Validation ROC Curves by Fold",
+    x = "1 - Specificity (FPR)",
+    y = "Sensitivity (TPR)"
+  ) +
+  theme_minimal(base_size = 14) +             # 字体稍微大一点
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold", size = 14)  # 面板标题加粗
+  )
 ```
+
+
 
 
 ```{r}
 
 # 最优解 - logistic regression
 
-# ---------- recipe + 模型 ----------
-rec_tune_final <- recipe(
-    retained_binary ~ ., 
-    data = train_data %>% select(retained_binary, all_of(finalVariables))
-  ) %>%
+# ---------- recipe + fold ----------
+# 
+rec_tune_final <- recipe(retained_binary ~ ., data = train_data) %>%
   step_string2factor(all_nominal_predictors()) %>%
   step_unknown(all_nominal_predictors()) %>%
-  step_novel(all_nominal_predictors()) %>%
   step_other(all_nominal_predictors(), threshold = 0.01) %>%
   step_dummy(all_nominal_predictors()) %>%
   step_impute_median(all_numeric_predictors()) %>%
   step_zv(all_predictors())
 
-set.seed(704)
+set.seed(12345)
 # fold 5 times
 folds_final <- vfold_cv(train_data, v = 5, strata = retained_binary)
 
-logit_mod_final <- logistic_reg(mode = "classification") %>%  set_engine("glm")
-wf_final <- workflow() %>%  add_recipe(rec_tune_final) %>%  add_model(logit_mod_final)
-
-# ---------- 训练 + 测试集评估 ----------
-final_fit <- fit(wf_final, data = train_data)
-
-
-# 3) 取出底层 glm 对象，查看 summary（含系数、SE、z、Pr(>|z|)）
-glm_final_fit <- workflows::extract_fit_engine(final_fit)   # == 一个 glm 对象
-summary(glm_final_fit)                                # 控制台里就能看到 p-value、(Intercept) 等
-
-
-preds_final <- augment(final_fit, new_data = test_data)  # 包含 .pred_0 / .pred_1 / .pred_class
-
-# 混淆矩阵
-# conf_mat(preds_final, truth = retained_binary, estimate = .pred_class)
-# logit_mod_final
 ```
-| Variable | Estimate | Std. Error | p-value | OR | CI Lower | CI Upper | Significant (p<0.05) | Interpretation |
-|----------|----------|------------|---------|----|----------|----------|----------------------|----------------|
-| (Intercept) | -0.0456 | 0.0382 | 0.233 | 0.9554 | 0.8847 | 1.0323 | FALSE | 基准情景的对数赔率/概率起点） |
-| weeks_since_last_purchase | -0.4694 | 0.0043 | 2e-16 | 0.6255 | 0.6166 | 0.6346 | TRUE | 该变量增加1单位，留存赔率↓约37.5% |
-| discounted_rate_last_purchase | -3.8825 | 0.0383 | 2e-16 | 0.0206 | 0.0191 | 0.0222 | TRUE | 该变量增加1单位，留存赔率↓约97.9% |
-| avg_AddOnpurchase_value | 0.0322 | 0.0006 | 2e-16 | 1.0327 | 1.0311 | 1.0343 | TRUE | 该变量增加1单位，留存赔率↑约3.3% |
-| num_purchases | 0.5537 | 0.0060 | 2e-16 | 1.7398 | 1.7113 | 1.7689 | TRUE | 该变量增加1单位，留存赔率↑约73.9% |
-| location_BayOfPlenty | 0.0534 | 0.0384 | 0.165 | 1.0548 | 0.9784 | 1.1367 | FALSE | 该变量增加1单位，留存赔率↑约5.5% |
-| location_Canterbury | -1.1345 | 0.0269 | 2e-16 | 0.3215 | 0.3047 | 0.3393 | TRUE | 该变量增加1单位，留存赔率↓约67.8% |
-| location_Gisborne | 0.0959 | 0.0934 | 0.309 | 1.1007 | 0.9166 | 1.3211 | FALSE | 该变量增加1单位，留存赔率↑约10.1% |
-| location_HawkesBay | 0.0279 | 0.0554 | 0.614 | 1.0283 | 0.9214 | 1.1478 | FALSE | 该变量增加1单位，留存赔率↑约2.8% |
-| location_ManawhatuWhanganui | -0.0339 | 0.0440 | 0.441 | 0.9666 | 0.8893 | 1.0506 | FALSE | 该变量增加1单位，留存赔率↓约3.3% |
-| location_Northland | -0.0285 | 0.0480 | 0.553 | 0.9720 | 0.8826 | 1.0696 | FALSE | 该变量增加1单位，留存赔率↓约2.8% |
-| location_Otago | -1.1905 | 0.0375 | 2e-16 | 0.3040 | 0.2823 | 0.3274 | TRUE | 该变量增加1单位，留存赔率↓约69.6% |
-| location_Southland | -1.1027 | 0.0565 | 2e-16 | 0.3317 | 0.2963 | 0.3714 | TRUE | 该变量增加1单位，留存赔率↓约66.8% |
-| location_Taranaki | -0.0627 | 0.0670 | 0.349 | 0.9393 | 0.8236 | 1.0715 | FALSE | 该变量增加1单位，留存赔率↓约6.1% |
-| location_Tasman | -1.0718 | 0.0772 | 2e-16 | 0.3423 | 0.2940 | 0.3986 | TRUE | 该变量增加1单位，留存赔率↓约65.8% |
-| location_Waikato | -0.0096 | 0.0332 | 0.773 | 0.9905 | 0.9265 | 1.0591 | FALSE | 该变量增加1单位，留存赔率↓约0.9% |
-| location_Wellington | -0.0359 | 0.0331 | 0.279 | 0.9647 | 0.9028 | 1.0302
 
-```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
-ctrl_final <- control_resamples(save_pred = TRUE)
-cv_res_final <- fit_resamples(
-  wf_final,
+
+```{r}
+
+# 1) 规格 + workflow
+logit_spec_glm <- logistic_reg(mode = "classification") %>%
+  set_engine("glm")
+
+logit_wf_glm <- workflow() %>%
+  add_recipe(rec_tune_final) %>%
+  add_model(logit_spec_glm)
+
+# 2) 训练最终模型（用全量 train_data）
+t0 <- Sys.time()
+logit_fit_glm <- fit(logit_wf_glm, data = train_data)
+t1 <- Sys.time()
+print("Train time:", t1 - t0, "\n")
+
+# 3) 查看系数（glm 对象：含系数/SE/z/p）
+glm_obj <- workflows::extract_fit_engine(logit_fit_glm)   # class "glm"
+summary(glm_obj)  # 控制台显示 p 值表
+
+# 若要 OR 和 95%CI（更好解释）
+library(broom)
+logit_or <- tidy(glm_obj, conf.int = TRUE, exponentiate = TRUE)
+# View(logit_or)  # OR/CI/显著性一览
+
+# 4) 测试集预测 & 六指标
+preds_test_glm <- augment(logit_fit_glm, new_data = test_data)
+
+test_metrics_glm <- dplyr::bind_rows(
+  roc_auc  (preds_test_glm, truth = retained_binary, .pred_1,     event_level = "second"),
+  accuracy (preds_test_glm, truth = retained_binary, .pred_class),
+  sens     (preds_test_glm, truth = retained_binary, .pred_class, event_level = "second"),
+  spec     (preds_test_glm, truth = retained_binary, .pred_class, event_level = "second"),
+  precision(preds_test_glm, truth = retained_binary, .pred_class, event_level = "second"),
+  f_meas   (preds_test_glm, truth = retained_binary, .pred_class, event_level = "second")
+)
+print(test_metrics_glm)
+
+# 混淆矩阵（阈值 0.5）
+conf_mat(preds_test_glm, truth = retained_binary, estimate = .pred_class)
+
+# （可选）测试集 ROC 单图
+preds_test_glm %>%
+  yardstick::roc_curve(retained_binary, .pred_1, event_level = "second") %>%
+  autoplot() + ggtitle("Logistic (glm) — Test ROC") + theme_minimal()
+
+# 5) 5 折交叉验证（评估稳定性；不用于“选模型”）
+cv_res_glm <- fit_resamples(
+  logit_wf_glm,
   resamples = folds_final,
-  control   = ctrl_final,
-  metrics   = metric_set(accuracy, sens, spec, precision, f_meas, roc_auc)
+  metrics   = metric_set(roc_auc, accuracy, sens, spec, precision, f_meas),
+  control   = control_resamples(save_pred = TRUE)
 )
 
-collect_metrics(cv_res_final)         # 5 折的均值和标准误
-```
+# CV 平均 ± 标准误
+cv_metrics_glm <- collect_metrics(cv_res_glm)
+print(cv_metrics_glm)
 
-
-```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
-
-# 1) 收集每个样本的预测
-cv_pred_final <- collect_predictions(cv_res_final, summarize = FALSE)
-
-# 2) 生成每折 ROC 曲线数据
-roc_cv <- cv_pred_final %>%
+# 每折 ROC（画分面）
+cv_pred_glm <- collect_predictions(cv_res_glm, summarize = FALSE)
+cv_roc_glm <- cv_pred_glm %>%
   group_by(id) %>%
-  roc_curve(truth = retained_binary, .pred_1, event_level = "second")
+  yardstick::roc_curve(truth = retained_binary, .pred_1, event_level = "second")
 
-# 3) 每折 AUC
-cv_auc_final <- cv_pred_final %>%
-  group_by(id) %>%
-  roc_auc(truth = retained_binary, .pred_1, event_level = "second")
-
-# 汇总均值±标准差
-auc_label_final <- cv_auc_final %>%
-  summarise(mean_auc = mean(.estimate), sd_auc = sd(.estimate)) %>%
-  mutate(lbl = sprintf("Mean AUC = %.3f ± %.3f", mean_auc, sd_auc)) %>%
-  pull(lbl)
-
-# 4) 画每折 ROC 曲线
-p_fold_final <- autoplot(roc_cv) + 
-  labs(title = "ROC by Fold (5-fold CV, Full Data)",
-       subtitle = auc_label_final,
-       x = "1 - Specificity", y = "Sensitivity") +
+autoplot(cv_roc_glm) +
+  ggtitle("Logistic (glm) — CV ROC by fold") +
   theme_minimal()
-print(p_fold_final)
+
+
+
 ```
 
 
