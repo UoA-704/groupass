@@ -669,6 +669,7 @@ rf_result
 # 4. Naive Bayes
 # -------------------
 
+set.seed(704)
 start_time <- Sys.time()
 
 nb_result <- run_model(
