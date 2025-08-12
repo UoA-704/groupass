@@ -148,7 +148,6 @@ filter_data %>%
   mutate(pct = n / sum(n) * 100)
 ```
 
-
 ```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 
 categorical_vars <- c(
@@ -191,6 +190,7 @@ num_summary <- psych::describe(filter_data %>% select(any_of(numeric_vars)))
 kable(num_summary, caption = "数值变量描述统计")
 
 ```
+
 ```{r}
 # 正态变量 
 nonSkewnessVariable <- c(
@@ -475,7 +475,6 @@ nrow(train_sample)   # 约等于 10000
 
 ```
 
-
 ```{r}
 
 # train smaple recipe
@@ -492,7 +491,6 @@ set.seed(12345)
 folds <- vfold_cv(train_sample, v = 5, strata = retained_binary)
 
 ```
-
 
 ```{r}
 
@@ -535,11 +533,10 @@ run_model <- function(model_spec, grid_spec, folds, train, test, model_name) {
     dplyr::ungroup() %>%
     dplyr::mutate(model = model_name)
 
-  list(best_params = best, cv_metrics = cv_metrics, test_metrics = test_metrics, cv_roc = cv_roc)
+  list(best_params = best, fit_tr = fit_tr, cv_metrics = cv_metrics, test_metrics = test_metrics, cv_roc = cv_roc)
 }
 
 ```
-
 
 ```{r}
 # -------------------
@@ -581,6 +578,9 @@ lgbm_result
 
 ```
 
+```{r}
+lgb.importance(lgbm_result)
+```
 
 ```{r}
 
@@ -626,7 +626,6 @@ xgb_result
 
 ```
 
-
 ```{r}
 
 # -------------------
@@ -663,7 +662,6 @@ print(runtime)
 rf_result
 
 ```
-
 
 ```{r}
 
@@ -737,8 +735,6 @@ print(runtime)
 logit_result
 ```
 
-
-
 ```{r}
 
 # logit regression
@@ -761,7 +757,6 @@ cv_roc_all <- bind_rows(
 
 ```
 
-
 ```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 
 ggplot(cv_roc_all, aes(x = 1 - specificity, y = sensitivity, color = id, group = id)) +
@@ -779,9 +774,6 @@ ggplot(cv_roc_all, aes(x = 1 - specificity, y = sensitivity, color = id, group =
     strip.text = element_text(face = "bold", size = 14)  # 面板标题加粗
   )
 ```
-
-
-
 
 ```{r}
 
@@ -802,7 +794,6 @@ set.seed(12345)
 folds_final <- vfold_cv(train_data, v = 5, strata = retained_binary)
 
 ```
-
 
 ```{r}
 
@@ -875,8 +866,6 @@ autoplot(cv_roc_glm) +
 
 
 ```
-
-
 
 -- Findings & Result Analysis
 
