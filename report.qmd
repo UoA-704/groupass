@@ -48,6 +48,7 @@ if (!require("patchwork")) install.packages("patchwork")
 if (!require("yardstick")) install.packages("yardstick")
 if (!require("glmnet")) install.packages("glmnet")
 if (!require("FSelectorRcpp")) install.packages("FSelectorRcpp")
+if (!require("themis")) install.packages("themis")
 library(tidymodels)
 library(tidyverse)
 library(knitr)
@@ -64,6 +65,7 @@ library(patchwork)
 library(yardstick)
 library(glmnet)
 library(FSelectorRcpp)
+library(themis)                   # 关键：step_upsample() 在这里
 ```
 
 -- Introduction
@@ -469,16 +471,6 @@ discountedRateLastPurchaseBar <- ggplot(filter_data,aes(x = discounted_rate_last
 discountedRateLastPurchaseBar
 ```
 
-```{r}
-
-filter_data <- filter_data %>%
-  mutate(retained_binary = 1 - retained_binary)
-
-filter_data %>%
-  count(retained_binary) %>%
-  mutate(pct = n / sum(n) * 100)
-
-```
 
 ```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 
@@ -527,15 +519,18 @@ rec_tune <- recipe(retained_binary ~ ., data = train_sample) %>%
   step_string2factor(all_nominal_predictors()) %>%
   step_unknown(all_nominal_predictors()) %>%
   step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_impute_median(all_numeric_predictors()) %>%   # 先补缺
+  step_normalize(all_numeric_predictors())  %>%      # 再标准化（只作用于现有数值列）
   step_dummy(all_nominal_predictors()) %>%
-  step_impute_median(all_numeric_predictors()) %>%
-  step_zv(all_predictors())
+  step_zv(all_predictors()) %>%
+  step_upsample(retained_binary, over_ratio = 1, skip = TRUE)  # 放最后
 
 set.seed(704)
 # fold 5 times
 folds <- vfold_cv(train_sample, v = 5, strata = retained_binary)
 
 ```
+
 
 ```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 
@@ -561,12 +556,12 @@ run_model <- function(model_spec, grid_spec, folds, train, test, model_name, rec
   message("Training on: ", nrow(train), " rows | Testing on: ", nrow(test), " rows")
 
   test_metrics <- dplyr::bind_rows(
-    roc_auc  (preds_te, truth = retained_binary, .pred_0,     event_level = "first"),    # note
-    accuracy (preds_te, truth = retained_binary, .pred_class, event_level = "first"),    # note
-    sens     (preds_te, truth = retained_binary, .pred_class, event_level = "first"),    # note
-    spec     (preds_te, truth = retained_binary, .pred_class, event_level = "first"),    # note
-    precision(preds_te, truth = retained_binary, .pred_class, event_level = "first"),    # note
-    f_meas   (preds_te, truth = retained_binary, .pred_class, event_level = "first")     # note
+    roc_auc  (preds_te, truth = retained_binary, .pred_1,     event_level = "second"),    # note
+    accuracy (preds_te, truth = retained_binary, .pred_class, event_level = "second"),    # note
+    sens     (preds_te, truth = retained_binary, .pred_class, event_level = "second"),    # note
+    spec     (preds_te, truth = retained_binary, .pred_class, event_level = "second"),    # note
+    precision(preds_te, truth = retained_binary, .pred_class, event_level = "second"),    # note
+    f_meas   (preds_te, truth = retained_binary, .pred_class, event_level = "second")     # note
   )
 
   # ← 5 折平均（只保留最优参数那组），有 mean / std_err
@@ -579,7 +574,7 @@ run_model <- function(model_spec, grid_spec, folds, train, test, model_name, rec
     dplyr::semi_join(best, by = ".config") %>%
     dplyr::mutate(retained_binary = factor(retained_binary, levels = c("0","1"))) %>%
     dplyr::group_by(id) %>%
-    yardstick::roc_curve(truth = retained_binary, .pred_0, event_level = "first") %>%     # note
+    yardstick::roc_curve(truth = retained_binary, .pred_1, event_level = "second") %>%     # note
     dplyr::ungroup() %>%
     dplyr::mutate(model = model_name)
 
@@ -846,7 +841,7 @@ top_dummy
 
 
 fit_logit <- function(rec_tune, train, test, fold_cv = NULL,
-                      event_level = "first") {       # ← 修改1：默认把正类设为 0=churn
+                      event_level = "second") {       # ← 修改1：默认把正类设为 0=churn
   # 1) 定义规格与 workflow
   spec <- logistic_reg(mode = "classification") %>% set_engine("glm")
   wf   <- workflow() %>% add_recipe(rec_tune) %>% add_model(spec)
@@ -873,14 +868,14 @@ fit_logit <- function(rec_tune, train, test, fold_cv = NULL,
   metr_tbl <- metr_set(
     preds,
     truth   = retained_binary,
-    .pred_0,                        # ← 修改2：用 .pred_0（预测 churn 概率）
+    .pred_1,                        # ← 修改2：用 .pred_0（预测 churn 概率）
     estimate = .pred_class,
     event_level = event_level
   ) %>% dplyr::arrange(.metric)
 
   # 7) 混淆矩阵 & ROC
   cm <- yardstick::conf_mat(preds, truth = retained_binary, estimate = .pred_class)
-  roc_df <- yardstick::roc_curve(preds, retained_binary, .pred_1, event_level = event_level)
+  roc_df <- yardstick::roc_curve(preds, retained_binary, .pred_1, event_level = event_level)  # ← 修改
   roc_plot <- autoplot(roc_df) + ggtitle("Logistic (glm) — Test ROC") + theme_minimal()
 
   # 8) 可选：交叉验证
@@ -901,7 +896,7 @@ fit_logit <- function(rec_tune, train, test, fold_cv = NULL,
     cv_preds <- collect_predictions(cv_res)
     cv_roc <- cv_preds %>%
       dplyr::group_by(id) %>%
-      yardstick::roc_curve(retained_binary, .pred_0, event_level = event_level) %>%   # ← 修改5：CV 的 ROC 用 .pred_0
+      yardstick::roc_curve(retained_binary, .pred_1, event_level = event_level) %>%   # ← 修改5：CV 的 ROC 用 .pred_0
       dplyr::ungroup() %>%
       dplyr::mutate(model = "Logistic", id = as.factor(id))
   }
@@ -1004,13 +999,15 @@ fiveModels
 
 # ---------- recipe + fold ----------
 # 
-rec_tune_final <- recipe(retained_binary ~ ., data = train_data) %>%
+rec_tune_final <- recipe(retained_binary ~ ., data = train_sample) %>%
   step_string2factor(all_nominal_predictors()) %>%
   step_unknown(all_nominal_predictors()) %>%
   step_other(all_nominal_predictors(), threshold = 0.01) %>%
+  step_impute_median(all_numeric_predictors()) %>%   # 先补缺
+  step_normalize(all_numeric_predictors())  %>%      # 再标准化（只作用于现有数值列）
   step_dummy(all_nominal_predictors()) %>%
-  step_impute_median(all_numeric_predictors()) %>%
-  step_zv(all_predictors())
+  step_zv(all_predictors()) %>%
+  step_upsample(retained_binary, over_ratio = 1, skip = TRUE)  # 放最后
 
 set.seed(704)
 # fold 5 times
@@ -1050,6 +1047,7 @@ logit_result_final$conf_mat
 collect_metrics(logit_result_final$cv_res)
 
 ```
+
 ```{r}
 
 
