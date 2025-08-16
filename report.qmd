@@ -253,8 +253,8 @@ num_test_results <- map_dfr(SkewnessVariables, function(v) {
   tibble(
     variable = v,
     p_value = test$p.value,
-    median_retained = median(group1, na.rm = TRUE),
-    median_churned = median(group0, na.rm = TRUE)
+    median_churned = median(group1, na.rm = TRUE),
+    median_retained = median(group0, na.rm = TRUE)
   )
 }) %>%
   arrange(p_value) %>%
@@ -263,6 +263,9 @@ num_test_results <- map_dfr(SkewnessVariables, function(v) {
 # top 5 most significant numeric variables
 head(num_test_results, 5)
 ```
+
+
+
 
 ```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 
@@ -523,6 +526,28 @@ train_sample <- training(subsplit)
 nrow(train_sample)   # 10000 n as train sample
 
 ```
+
+```{r}
+
+
+# --- Check original training set size & class distribution ---
+nrow(train_sample)
+table(train_sample$retained_binary)
+
+
+# --- Prep recipe and apply downsampling ---
+set.seed(704)
+rec_prep  <- prep(rec_tune, training = train_sample)
+train_down <- juice(rec_prep)
+
+# Check downsampled size & distribution
+nrow(train_down)
+table(train_down$retained_binary)
+
+
+```
+
+
 
 ```{r, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 
